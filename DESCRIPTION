@@ -1,0 +1,23 @@
+Package: EvolvingWildPkg
+Type: Package
+Title: Scrape the NHL Website for Data
+Version: 0.1.0
+Author: Evolving Wild - <https://github.com/evolvingwild>
+Maintainer: The package maintainer <yourself@somewhere.net>
+Description: Download play by play data from the NHL website. Include Rosters, Events, Scratches
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+Imports: 
+    RCurl,
+    xml2,
+    rvest,
+    jsonlite,
+    foreach,
+    lubridate,
+    stringr,
+    readr,
+    tidyr,
+    dplyr,
+    magrittr
+RoxygenNote: 6.1.1
