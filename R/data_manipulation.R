@@ -1,560 +1,3 @@
-###################################################################################
-#####         Evolving-Hockey Scraper         ||          2019-05-18          #####
-###################################################################################
-
-## Current as of: R version 3.6.0 (2019-04-26)
-
-
-## Dependencies
-# library(RCurl); library(xml2); library(rvest); library(jsonlite); library(foreach)
-# library(lubridate)
-# library(tidyverse) -- specifically: stringr, readr, tidyr, and dplyr
-
-
-## Set for numeric/text formatting within scraper
-options(
-  scipen = 999,
-  stringsAsFactors = FALSE
-  )
-
-
-
-## *** Notes & examples provided below all functions
-
-
-
-## --------------- ##
-##   Source URLs   ##
-## --------------- ##
-
-#####################
-
-## HTML main source:
-# events source:        http://www.nhl.com/scores/htmlreports/20182019/PL020001.HTM
-# rosters source:       http://www.nhl.com/scores/htmlreports/20182019/RO020001.HTM
-# shifts source (home): http://www.nhl.com/scores/htmlreports/20182019/TH020001.HTM
-# shifts source (away): http://www.nhl.com/scores/htmlreports/20182019/TV020001.HTM
-
-## HTML extras:
-# game summary:  http://www.nhl.com/scores/htmlreports/20182019/GS020001.HTM
-# event summary: http://www.nhl.com/scores/htmlreports/20182019/ES020001.HTM
-
-## NHL API:
-# events source:  https://statsapi.web.nhl.com/api/v1/game/2018020001/feed/live?site=en_nhl
-# shifts source:  http://www.nhl.com/stats/rest/shiftcharts?cayenneExp=gameId=2018020001
-# shifts charts:  http://www.nhl.com/stats/shiftcharts?id=2018020001  *** (for viewing)
-# schedule source: https://statsapi.web.nhl.com/api/v1/schedule?startDate=2018-10-03&endDate=2018-10-03
-
-## ESPN links:
-# ESPN game IDs source: http://www.espn.com/nhl/scoreboard?date=20181003
-# ESPN XML source:      http://www.espn.com/nhl/gamecast/data/masterFeed?lang=en&isAll=true&rand=0&gameId=401044320
-# ESPN events check:    http://www.espn.com/nhl/playbyplay/_/gameId/401044320
-
-#####################
-
-
-## ------------------ ##
-##   Create Objects   ##
-## ------------------ ##
-
-########################
-
-
-
-
-
-
-
-
-########################
-
-
-## --------------------- ##
-##   Scraper Functions   ##
-## --------------------- ##
-
-###########################
-
-## --------------- ##
-##   Scrape Data   ##
-## --------------- ##
-
-## Scrape Schedule
-sc.scrape_schedule <- function(start_date = Sys.Date(), end_date = Sys.Date(), print_sched = TRUE) {
-
-  ## getURL for schedule data
-  url_schedule <- NULL
-  try_count <- 3
-
-  while (!is.character(url_schedule) & try_count > 0) {
-
-    url_schedule <- try(
-      getURL(
-        paste0(
-          "https://statsapi.web.nhl.com/api/v1/schedule?startDate=",
-          as.character(start_date),
-          "&endDate=",
-          as.character(end_date)
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-  ## Parse JSON data
-  if (is.character(url_schedule)) {
-    schedule_list <- jsonlite::fromJSON(url_schedule)
-
-    }
-
-  ## Return from function if scrape returned no data
-  if (length(schedule_list$dates) == 0) {
-
-    warning("NHL Schedule API Returned No Data")
-
-    ## Return empty data.frame in same format if error occurred
-    return(
-      data.frame(
-        game_id = character(),
-        game_date = character(),
-        season = character(),
-        session = character(),
-        game_status = character(),
-        away_team = character(),
-        home_team = character(),
-        game_venue = character(),
-        game_datetime = character(),
-        EST_time_convert = character(),
-        EST_date = character(),
-        stringsAsFactors = FALSE
-        )
-      )
-
-    }
-
-
-  ## Bind games from schedule list
-  bind_schedule <- foreach(i = 1:length(schedule_list$dates$games), .combine = rbind) %do% {
-
-    schedule_current <- data.frame(
-      game_id =       as.character(schedule_list$dates$games[[i]]$gamePk),
-      game_date =     as.Date(schedule_list$dates$games[[i]]$gameDate),
-      season =        schedule_list$dates$games[[i]]$season,
-      session =       schedule_list$dates$games[[i]]$gameType,
-      game_status =   schedule_list$dates$games[[i]]$status$detailedState,
-      away_team_id =  schedule_list$dates$games[[i]]$teams$away$team$id,
-      home_team_id =  schedule_list$dates$games[[i]]$teams$home$team$id,
-      game_venue =    schedule_list$dates$games[[i]]$venue$name,
-      game_datetime = schedule_list$dates$games[[i]]$gameDate,
-
-      stringsAsFactors = FALSE
-      )
-
-    }
-
-
-  ## Modify bound schedule data
-  schedule_current <- bind_schedule %>%
-    arrange(game_id) %>%
-    filter(session != "PR") %>%   ## filter out preseason games
-    dplyr::mutate(
-      home_team_id = Team_ID$Team[match(home_team_id, Team_ID$ID)],
-      away_team_id = Team_ID$Team[match(away_team_id, Team_ID$ID)],
-
-      EST_time_convert = format(
-        as.POSIXct(gsub("T", " ", game_datetime) %>% gsub("Z", "", .),
-                   tz = "UTC",
-                   format = "%Y-%m-%d %H:%M:%S"),
-        tz = "Canada/Eastern"
-        ),
-
-      EST_date = as.Date(
-        ifelse(is.na(EST_time_convert), as.Date(game_datetime) - 1, EST_time_convert),
-        origin = "1970-01-01"
-        ),
-
-      game_date = EST_date
-      ) %>%
-    arrange(game_id) %>%
-    rename(home_team = home_team_id,
-           away_team = away_team_id
-           ) %>%
-    data.frame()
-
-  ## Arrange if playoff games
-  if ("P" %in% unique(schedule_current$session)) {
-    schedule_current <- arrange(schedule_current, game_date, EST_time_convert)
-
-    }
-
-  ## print schedule
-  if (print_sched == TRUE) print(head(schedule_current, 20))
-
-  ## return schedule
-  return(schedule_current)
-
-  }
-
-## Scrape Events (HTM)
-sc.scrape_events_HTM <- function(game_id_fun, season_id_fun, attempts = 3) {
-
-  url_events_HTM <- NULL
-  try_count <-  attempts
-
-  while (!is.character(url_events_HTM) & try_count > 0) {
-
-    url_events_HTM <- try(
-      getURL(
-        paste0(
-          "http://www.nhl.com/scores/htmlreports/",
-          as.character(season_id_fun),
-          "/PL0",
-          as.character(substr(game_id_fun, 6, 10)),
-          ".HTM"
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-  ## Pull out events data
-  events_body_text <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_events_HTM), ".bborder"))
-
-  }
-
-## Scrape Events (API)
-sc.scrape_events_API <- function(game_id_fun, attempts = 3) {
-
-  url_events_API <- NULL
-  try_count <-  attempts
-
-  while (!is.character(url_events_API) & try_count > 0) {
-
-    url_events_API <- try(
-      getURL(
-        paste0(
-          "https://statsapi.web.nhl.com/api/v1/game/",
-          game_id_fun,
-          "/feed/live?site=en_nhl"
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-
-  ## Parse JSON // Error handling
-  if (is.character(url_events_API)) {
-    events_list_API <- try(jsonlite::fromJSON(url_events_API), silent = TRUE)
-    } else {
-      events_list_API <- list()
-      }
-
-  if (class(events_list_API) == "try-error") {
-    events_list_API <- jsonlite::fromJSON(
-      suppressWarnings(
-        readLines(paste0("https://statsapi.web.nhl.com/api/v1/game/", game_id_fun, "/feed/live?site=en_nhl"))
-        )
-      )
-
-    }
-
-  if (class(events_list_API) != "list") {
-    events_list_API <- list()
-
-    }
-
-
-  return(events_list_API)
-
-  }
-
-## Scrape Events (ESPN)
-sc.scrape_events_ESPN <- function(game_id_fun, season_id_fun, game_info_data, attempts = 3) {
-
-  ## Scrape ESPN to locate game IDs for the specified date
-  url_ESPN_page <- NULL
-  try_count <- attempts
-
-  while(class(url_ESPN_page) != "character" & try_count > 0) {
-
-    url_ESPN_page <- try(
-      getURL(
-        .opts = curlOptions(
-          referer = "www.espn.com",
-          verbose = FALSE,
-          followLocation = TRUE
-          ),
-        # url to scrape
-        paste0(
-          "http://www.espn.com/nhl/scoreboard?date=",
-          gsub("-", "", as.character(game_info_data$game_date))
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-
-  # ## Parse games from scraped ESPN day page
-  # ESPN_game_ids <- as.character(unique(unlist(str_extract_all(url_ESPN_page, "gameId=[0-9]+")))) %>% gsub("gameId=", "", .)
-  # ESPN_teams <-    toupper(gsub("team/_/name/|>|</div>", "", unique(unlist(str_extract_all(url_ESPN_page, "team/_/name/[a-zA-Z]+|>(Coyotes|Thrashers)</div>")))))
-
-
-  ## Get game ids  *** New ESPN Scoreboard Page
-  ESPN_game_ids <- as.character(unique(unlist(str_extract_all(url_ESPN_page, "boxscore/_/gameId/[0-9]+")))) %>% gsub("boxscore/_/gameId/", "", .)
-
-  ## Get team ids
-  ESPN_container <- rvest::html_text(rvest::html_node(read_html(url_ESPN_page), "#fittPageContainer"))
-  ESPN_teams <- toupper(unlist(str_extract_all(ESPN_container, "[0-9A-Z]{4}[a-zA-Z\\s]+[(]+")) %>% gsub("123T|123OTT|123SOT", "", .) %>% gsub("[0-9]|[(]", "", .))
-
-  ## Get partial team names data frame
-  part_team_names <- full_team_names %>%
-    group_by(Team, partTeam) %>%
-    summarise() %>%
-    data.frame()
-
-
-  ## Check if ESPN URL returned game IDs
-  if (length(ESPN_game_ids) > 0) {
-
-    ESPN_games_df <- suppressWarnings(cbind(
-        ESPN_game_ids,
-        matrix(unique(ESPN_teams), byrow = TRUE, ncol = 2)
-        )) %>%
-      data.frame(stringsAsFactors = FALSE) %>%
-      select(
-        game_id =   1,
-        away_team = V2,
-        home_team = V3
-        ) %>%
-      mutate_at(
-        vars(home_team, away_team),
-        funs(toupper(.))
-        ) %>%
-      mutate_at(
-        vars(home_team, away_team),
-        funs(part_team_names$Team[match(., part_team_names$partTeam)])
-        ) %>%
-      ## ensure duplicate games are not created
-      group_by(game_id) %>%
-      dplyr::mutate(index = row_number()) %>%
-      filter(index == 1) %>%
-      select(-index) %>%
-      data.frame()
-
-
-    ## Update Teams for Thrashers (WPG -> ATL, 20102011 season and earlier)
-    ESPN_games_df <- ESPN_games_df %>%
-      mutate_at(
-        vars(away_team, home_team),
-        funs(ifelse(. == "WPG" & game_info_data$season <= 20102011, "ATL", .))
-        )
-
-
-    ## Scrape individual game
-    ESPN_game_id_ <- filter(ESPN_games_df, away_team == game_info_data$away_team, home_team == game_info_data$home_team)$game_id
-
-    url_ESPN_game <- NULL
-    try_count <- 3
-
-    while(class(url_ESPN_game) != "character" & try_count > 0) {
-
-      url_ESPN_game <- try(
-        getURL(
-          .opts = curlOptions(referer = "www.espn.com",
-                              verbose = FALSE,
-                              followLocation = TRUE),
-          ## url to scrape
-          paste0("http://www.espn.com/nhl/gamecast/data/masterFeed?lang=en&isAll=true&rand=0&gameId=", ESPN_game_id_)
-          )
-        )
-
-      try_count <- try_count - 1
-
-      }
-
-
-    ## Parse xml data
-    xml_ESPN_events <- url_ESPN_game %>%
-      gsub("\023", "", .) %>%   ## prevent xml parse from erroring
-      read_xml %>%
-      xml_nodes("Plays") %>%
-      xml_children() %>%
-      xml_text() %>%
-      strsplit("~") %>%
-      do.call(rbind, .) %>%
-      data.frame(stringsAsFactors = FALSE)
-
-
-    return(xml_ESPN_events)
-
-    } else {
-
-      return(return_char <- "ESPN_NULL")
-
-      }
-
-  }
-
-## Scrape Shifts (HTM)
-sc.scrape_shifts <- function(game_id_fun, season_id_fun, attempts = 3) {
-
-  url_home_shifts <- NULL
-  try_count <-  attempts
-
-  while (!is.character(url_home_shifts) & try_count > 0) {
-
-    url_home_shifts <- try(
-      getURL(
-        paste0(
-          "http://www.nhl.com/scores/htmlreports/",
-          season_id_fun,
-          "/TH0",
-          as.character(substr(game_id_fun, 6, 10)),
-          ".HTM"
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-  url_away_shifts <- NULL
-  try_count <- attempts
-
-  while (!is.character(url_away_shifts) & try_count > 0) {
-
-    url_away_shifts <- try(
-      getURL(
-        paste0(
-          "http://www.nhl.com/scores/htmlreports/",
-          season_id_fun,
-          "/TV0",
-          as.character(substr(game_id_fun, 6, 10)),
-          ".HTM"
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-  ## Pull out scraped shifts data
-  home_shifts_titles <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_home_shifts), ".border"))
-  away_shifts_titles <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_away_shifts), ".border"))
-
-  home_shifts_text <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_home_shifts), ".bborder"))
-  away_shifts_text <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_away_shifts), ".bborder"))
-
-  ## Return data as list
-  return_list  <- list(home_shifts_titles = home_shifts_titles,
-                       away_shifts_titles = away_shifts_titles,
-                       home_shifts_text =   home_shifts_text,
-                       away_shifts_text =   away_shifts_text)
-
-  }
-
-## Scrape Shifts (API)
-sc.scrape_shifts_API <- function(game_id_fun, attempts = 3) {
-
-  url_shifts <- NULL
-  try_count <-  attempts
-
-  while (!is.character(url_shifts) & try_count > 0) {
-
-    url_shifts <- try(
-      getURL(
-        paste0(
-          "http://www.nhl.com/stats/rest/shiftcharts?cayenneExp=gameId=",
-          game_id_fun
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-  if (is.character(url_shifts)) {
-    shifts_list <- jsonlite::fromJSON(url_shifts)
-    } else {
-      shifts_list <- list()
-      }
-
-  return(shifts_list)
-
-  }
-
-## Scrape Rosters
-sc.scrape_rosters <- function(game_id_fun, season_id_fun, attempts = 3) {
-
-  url_rosters <- NULL
-  try_count <- attempts
-
-  while (is.null(url_rosters) & try_count > 0) {
-
-    url_rosters <- try(
-      getURL(
-        paste0(
-          "http://www.nhl.com/scores/htmlreports/",
-          as.character(season_id_fun),
-          "/RO0",
-          as.character(substr(game_id_fun, 6, 10)),
-          ".HTM"
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-  ## Pull out roster data
-  rosters_text <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_rosters), "td"))
-
-  }
-
-## Scrape Event Summary
-sc.scrape_event_summary <- function(game_id_fun, season_id_fun, attempts = 3) {
-
-  url_event_summary <- NULL
-  try_count <- attempts
-
-  while (is.null(url_event_summary) & try_count > 0) {
-
-    url_event_summary <- try(
-      getURL(
-        paste0(
-          "http://www.nhl.com/scores/htmlreports/",
-          as.character(season_id_fun),
-          "/ES0",
-          as.character(substr(game_id_fun, 6, 10)),
-          ".HTM"
-          )
-        )
-      )
-
-    try_count <- try_count - 1
-
-    }
-
-  ## Pull out roster data
-  event_summary_text <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_event_summary), "td"))
-
-  }
-
-
 ## ---------------------------- ##
 ##   Create Basic Data Frames   ##
 ## ---------------------------- ##
@@ -576,21 +19,21 @@ sc.game_info <- function(game_id_fun, season_id_fun, events_data, roster_data) {
     if (roster_data[referee_index] == "\r\n") {
       referee_index <- referee_index + 4
 
-      }
+    }
 
     referee_1 <-     na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index    ]) %>% gsub("\\s", ".", .)))
     referee_2 <-     na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 1]) %>% gsub("\\s", ".", .)))
     linesman_1 <-    na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 3]) %>% gsub("\\s", ".", .)))
     linesman_2 <-    na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 4]) %>% gsub("\\s", ".", .)))
 
-    } else {
-      referee_index <- grep("^Referee:", roster_data)
-      referee_1 <-     na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 2]) %>% gsub("\\s", ".", .)))
-      referee_2 <-     na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 3]) %>% gsub("\\s", ".", .)))
-      linesman_1 <-    na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 6]) %>% gsub("\\s", ".", .)))
-      linesman_2 <-    na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 7]) %>% gsub("\\s", ".", .)))
+  } else {
+    referee_index <- grep("^Referee:", roster_data)
+    referee_1 <-     na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 2]) %>% gsub("\\s", ".", .)))
+    referee_2 <-     na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 3]) %>% gsub("\\s", ".", .)))
+    linesman_1 <-    na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 6]) %>% gsub("\\s", ".", .)))
+    linesman_2 <-    na_if_null(toupper(gsub("#[0-9]*\\s", "", roster_data[referee_index + 7]) %>% gsub("\\s", ".", .)))
 
-      }
+  }
 
 
   ## Find venue & attendance (french format / standard format)
@@ -598,11 +41,11 @@ sc.game_info <- function(game_id_fun, season_id_fun, events_data, roster_data) {
     venue_vec <-      first(roster_data[grep("^Attendance\\s*", roster_data)]) %>% gsub(".*at\\s*", "", .)
     attendance_vec <- first(roster_data[grep("^Attendance*", roster_data)]) %>% str_extract(., "[0-9]+,[0-9]+") %>% gsub(",", "", .) %>% as.numeric()
 
-    } else {
-      venue_vec <-      first(roster_data[grep("^Ass./Att.\\s*", roster_data)]) %>% gsub(".*@\\s*", "", .)
-      attendance_vec <- first(roster_data[grep("^Ass./Att.\\s*", roster_data)]) %>% str_extract(., "[0-9]+,[0-9]+") %>% gsub(",", "", .) %>% as.numeric()
+  } else {
+    venue_vec <-      first(roster_data[grep("^Ass./Att.\\s*", roster_data)]) %>% gsub(".*@\\s*", "", .)
+    attendance_vec <- first(roster_data[grep("^Ass./Att.\\s*", roster_data)]) %>% str_extract(., "[0-9]+,[0-9]+") %>% gsub(",", "", .) %>% as.numeric()
 
-      }
+  }
 
 
   ## Create game info data frame
@@ -616,7 +59,7 @@ sc.game_info <- function(game_id_fun, season_id_fun, events_data, roster_data) {
         as.character(substr(game_id_fun, 6, 10)) > 20000 & as.character(substr(game_id_fun, 6, 10)) < 30000  ~ "R",
         as.character(substr(game_id_fun, 6, 10)) > 30000 ~ "P",
         as.character(substr(game_id_fun, 6, 10)) < 20000 ~ "PS"
-        ),
+      ),
     game_time_start = first(na.omit(str_extract(roster_data, "[sS]tart\\s*[0-9]+:[0-9]+\\s*[A-Z]+"))) %>% gsub("[sS]tart\\s*", "", .),
     game_time_end =   first(na.omit(str_extract(roster_data, "[eE]nd\\s*[0-9]+:[0-9]+\\s*[A-Z]+"))) %>% gsub("[eE]nd\\s*", "", .),
     venue =           venue_vec,
@@ -633,7 +76,7 @@ sc.game_info <- function(game_id_fun, season_id_fun, events_data, roster_data) {
     linesman_2 =      ifelse(as.character(substr(game_id_fun, 6, 10)) < 30000, linesman_2, NA),
 
     stringsAsFactors = FALSE
-    ) %>%
+  ) %>%
     dplyr::mutate(
       home_team = ifelse(home_team == "PHX", "ARI", home_team),
       away_team = ifelse(away_team == "PHX", "ARI", away_team),
@@ -648,9 +91,9 @@ sc.game_info <- function(game_id_fun, season_id_fun, events_data, roster_data) {
       attendance =      ifelse(game_id == "2009020874", 13421, attendance),
       home_score =      ifelse(game_id == "2009020874", 6, home_score),
       away_score =      ifelse(game_id == "2009020874", 1, away_score)
-      )
+    )
 
-  }
+}
 
 ## Fix Player Names - HTM
 sc.update_names_HTM <- function(data, col_name) {
@@ -671,7 +114,7 @@ sc.update_names_HTM <- function(data, col_name) {
           grepl("^ALEXANDER.|^ALEXANDRE.", player_name) ~ gsub("^ALEXANDER.|^ALEXANDRE.", "ALEX.", player_name),
           grepl("^CHRISTOPHER.", player_name) ~ gsub("^CHRISTOPHER.", "CHRIS.", player_name),
           TRUE ~ player_name
-          ),
+        ),
       player_name =
         ## Specific name changes
         case_when(
@@ -803,8 +246,8 @@ sc.update_names_HTM <- function(data, col_name) {
           player_name == "TIMOTHY JR..THOMAS" ~ "TIM.THOMAS",
 
           TRUE ~ player_name
-          )
-      ) %>%
+        )
+    ) %>%
     data.frame()
 
   ## Replace original column with newly created column
@@ -814,9 +257,9 @@ sc.update_names_HTM <- function(data, col_name) {
   return(
     fixed_names_df %>%
       select(-player_name)
-    )
+  )
 
-  }
+}
 
 ## Create Rosters data.frame
 sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_data, shifts_list) {
@@ -827,7 +270,7 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
   if (length(roster_player_counts) == 0) {  ## extract string for alternate formatting
     roster_player_counts <- lapply(str_extract_all(roster_data[grep("^\n#\nPos\nName", roster_data)], "[0-9]+"), length)
 
-    }
+  }
 
   ## Find players in rosters html text
   roster_index <- which(roster_data  %in% c("Name", "Nom/Name")) + 1
@@ -839,7 +282,7 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
       player =   roster_data[seq(roster_index[1] + 2, roster_index[1] + ((roster_player_counts[[1]] - 1) * 3) + 2, by = 3)][1:(roster_player_counts[[1]])],
       number =   roster_data[seq(roster_index[1]    , roster_index[1] + ((roster_player_counts[[1]] - 1) * 3)    , by = 3)][1:(roster_player_counts[[1]])],
       position = roster_data[seq(roster_index[1] + 1, roster_index[1] + ((roster_player_counts[[1]] - 1) * 3) + 1, by = 3)][1:(roster_player_counts[[1]])]
-      ) %>%
+    ) %>%
       dplyr::mutate(Team = game_info_data$away_team),
 
     ## Home players
@@ -847,15 +290,15 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
       player =   roster_data[seq(roster_index[2] + 2, roster_index[2] + ((roster_player_counts[[2]] - 1) * 3) + 2, by = 3)][1:(roster_player_counts[[2]])],
       number =   roster_data[seq(roster_index[2]    , roster_index[2] + ((roster_player_counts[[2]] - 1) * 3)    , by = 3)][1:(roster_player_counts[[2]])],
       position = roster_data[seq(roster_index[2] + 1, roster_index[2] + ((roster_player_counts[[2]] - 1) * 3) + 1, by = 3)][1:(roster_player_counts[[2]])]
-      ) %>%
+    ) %>%
       dplyr::mutate(Team = game_info_data$home_team)
 
-    ) %>%
+  ) %>%
     data.frame(stringsAsFactors = FALSE) %>%
     dplyr::mutate(
       player = gsub("\\s*\\([A-Z]\\)", "", player),
       player_team_num = paste0(Team, number)
-      )
+    )
 
 
   ## Find scratches
@@ -871,20 +314,20 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
         player =   roster_data[seq(roster_index[3] + 2, roster_index[3] + ((away_scratch_count - 1) * 3) + 2, by = 3)][1:away_scratch_count],
         number =   roster_data[seq(roster_index[3]    , roster_index[3] + ((away_scratch_count - 1) * 3)    , by = 3)][1:away_scratch_count],
         position = roster_data[seq(roster_index[3] + 1, roster_index[3] + ((away_scratch_count - 1) * 3) + 1, by = 3)][1:away_scratch_count]
-        ) %>%
+      ) %>%
         dplyr::mutate(Team = game_info_data$away_team,
-               venue = "Away"),
+                      venue = "Away"),
 
       ## Home scratches
       bind_cols(
         player =   roster_data[seq(roster_index[4] + 2, roster_index[4] + ((home_scratch_count - 1) * 3) + 2, by = 3)][1:home_scratch_count],
         number =   roster_data[seq(roster_index[4]    , roster_index[4] + ((home_scratch_count - 1) * 3)    , by = 3)][1:home_scratch_count],
         position = roster_data[seq(roster_index[4] + 1, roster_index[4] + ((home_scratch_count - 1) * 3) + 1, by = 3)][1:home_scratch_count]
-        ) %>%
-        dplyr::mutate(Team = game_info_data$home_team,
-               venue = "Home")
-
       ) %>%
+        dplyr::mutate(Team = game_info_data$home_team,
+                      venue = "Home")
+
+    ) %>%
       data.frame(stringsAsFactors = FALSE) %>%
       dplyr::mutate(
         player =          gsub("\\s*\\([A-Z]\\)", "", player),
@@ -900,7 +343,7 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
         session =         game_info_data$session,
         Opponent =        ifelse(Team == game_info_data$home_team, game_info_data$away_team, game_info_data$home_team),
         is_home =         1 * (Team == game_info_data$home_team)
-        ) %>%
+      ) %>%
 
       ## Name Corrections
       sc.update_names_HTM(., col_name = "player") %>%
@@ -916,33 +359,33 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
 
             player == "ANDREW.MILLER" & season == "20072008" ~ "DREW.MILLER", ## DREW.MILLER 8470778 ID
             TRUE ~ player
-            )
-        ) %>%
+          )
+      ) %>%
 
       select(player, position, position_type, game_id, game_date, season, session, Team, Opponent, is_home, player_num, player_team_num) %>%
       arrange(is_home, player) %>%
       data.frame()
 
-    } else {
+  } else {
 
-      roster_scratches <-
-        data.frame(
-          player = character(),
-          position = character(),
-          position_type = character(),
-          game_id = character(),
-          game_date = character(),
-          season = character(),
-          session = character(),
-          Team = character(),
-          Opponent = character(),
-          is_home = numeric(),
-          player_num = numeric(),
-          player_team_num = character(),
-          stringsAsFactors = FALSE
-          )
+    roster_scratches <-
+      data.frame(
+        player = character(),
+        position = character(),
+        position_type = character(),
+        game_id = character(),
+        game_date = character(),
+        season = character(),
+        session = character(),
+        Team = character(),
+        Opponent = character(),
+        is_home = numeric(),
+        player_num = numeric(),
+        player_team_num = character(),
+        stringsAsFactors = FALSE
+      )
 
-      }
+  }
 
 
   ## Prepare & construct roster data frame
@@ -952,7 +395,7 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
   if (game_id_fun == 2007030174) {  ## Manually remove Ryan Smyth from opposing team (one-off fix)
     away_shifts_titles <- away_shifts_titles[which(!(away_shifts_titles %in% "94 SMYTH, RYAN"))]
 
-    }
+  }
 
   roster_df <- bind_rows(
     data.frame(
@@ -963,7 +406,7 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
       # num_last_first = shifts_list$home_shifts_titles[-1],
       num_last_first = home_shifts_titles[-1],
       stringsAsFactors = FALSE
-      ),
+    ),
     data.frame(
       # team_name =      shifts_list$away_shifts_titles[1],
       team_name =      away_shifts_titles[1],
@@ -972,8 +415,8 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
       # num_last_first = shifts_list$away_shifts_titles[-1],
       num_last_first = away_shifts_titles[-1],
       stringsAsFactors = FALSE
-      )
-    ) %>%
+    )
+  ) %>%
     data.frame() %>%
     filter(grepl("[A-Z0-9]", num_last_first)) %>%  ## ensure string starts with player number
     dplyr::mutate(
@@ -983,21 +426,21 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
       session =         game_info_data$session,
       player_num =      parse_number(num_last_first),
       player_team_num = paste0(Team, player_num)
-      ) %>%
+    ) %>%
     group_by(player_team_num) %>%
     dplyr::mutate(
       firstName = strsplit(gsub("^[0-9]+ ", "", num_last_first), ", ")[[1]][2],
       lastName =  strsplit(gsub("^[0-9]+ ", "", num_last_first), ", ")[[1]][1],
       player =    paste0(firstName, ".", lastName)
-      ) %>%
+    ) %>%
     ungroup() %>%
     left_join(
       roster_players %>% select(player_team_num, position),
       by = "player_team_num"
-      ) %>%
+    ) %>%
     dplyr::mutate(
       position_type = ifelse(position == "G", "G", ifelse(position == "D", "D", "F"))
-      ) %>%
+    ) %>%
 
     ## Name Corrections
     sc.update_names_HTM(., col_name = "player") %>%
@@ -1013,12 +456,12 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
 
           player == "ANDREW.MILLER" & season == "20072008" ~ "DREW.MILLER", ## DREW.MILLER 8470778 ID
           TRUE ~ player
-          )
-      ) %>%
+        )
+    ) %>%
     select(
       player, player_num, Team, game_id, game_date, season, session, num_last_first,
       player_team_num, firstName, lastName, venue, position_type, position
-      ) %>%
+    ) %>%
     arrange(venue, player) %>%
     data.frame()
 
@@ -1031,7 +474,7 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
       left_join(
         roster_scratches %>% select(player_team_num, position, position_type),
         by = "player_team_num"
-        ) %>%
+      ) %>%
       data.frame()
 
     if (nrow(roster_df_hold_NAs) > 0) {
@@ -1040,18 +483,18 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
         roster_df_correct <- bind_rows(
           roster_df %>% filter(!is.na(position_type), !is.na(position)),
           roster_df_hold_NAs
-          ) %>%
+        ) %>%
           arrange(venue, player) %>%
           data.frame()
 
         ## Replace original roster_df data frame
         roster_df <- roster_df_correct
 
-        }
-
       }
 
     }
+
+  }
 
 
   ## Roster data to be returned from final compile function
@@ -1059,11 +502,11 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
     dplyr::mutate(
       Opponent = ifelse(Team == game_info_data$home_team, game_info_data$away_team, game_info_data$home_team),
       is_home =  1 * (Team == game_info_data$home_team)
-      ) %>%
+    ) %>%
     select(
       player, num_last_first, player_team_num, position, position_type, game_id, game_date, season, session, Team, Opponent, is_home,
       player_num, firstName, lastName
-      ) %>%
+    ) %>%
     data.frame()
 
 
@@ -1072,9 +515,9 @@ sc.roster_info <- function(game_id_fun, season_id_fun, roster_data, game_info_da
     roster_df =       roster_df,
     roster_df_final = roster_df_return,
     scratches_df =    roster_scratches
-    )
+  )
 
-  }
+}
 
 ## Create Event Summary Data Frame
 sc.event_summary <- function(game_id_fun, season_id_fun, event_summary_data, roster_data, game_info_data) {
@@ -1097,13 +540,13 @@ sc.event_summary <- function(game_id_fun, season_id_fun, event_summary_data, ros
         matrix(ncol = 25, byrow = TRUE) %>%
         data.frame(stringsAsFactors = FALSE)
 
-      } %>%
+    } %>%
       mutate_all(funs(gsub("\\b\\s\\b", 0, .))) %>%
       dplyr::mutate(
         Team =     game_info_data$away_team,
         Opponent = game_info_data$home_team,
         is_home =  0
-        ),
+      ),
 
     ## Home players
     foreach(i = 1:length(home_index), .combine = bind_rows) %do% {
@@ -1112,15 +555,15 @@ sc.event_summary <- function(game_id_fun, season_id_fun, event_summary_data, ros
         matrix(ncol = 25, byrow = TRUE) %>%
         data.frame(stringsAsFactors = FALSE)
 
-      } %>%
+    } %>%
       mutate_all(funs(gsub("\\b\\s\\b", 0, .))) %>%
       dplyr::mutate(
         Team =     game_info_data$home_team,
         Opponent = game_info_data$away_team,
         is_home =  1
-        )
+      )
 
-    )
+  )
 
   ## Set column names
   colnames(event_summary_all) <- c(
@@ -1128,7 +571,7 @@ sc.event_summary <- function(game_id_fun, season_id_fun, event_summary_data, ros
     "TOI_all", "SHF", "AVG", "TOI_PP", "TOI_SH", "TOI_EV",
     "S", "A_B", "MS", "HT", "GV", "TK", "BS", "FW", "FL", "FO_perc",
     "Team", "Opponent", "is_home"
-    )
+  )
 
 
   ## Finalize
@@ -1136,7 +579,7 @@ sc.event_summary <- function(game_id_fun, season_id_fun, event_summary_data, ros
     mutate_at(
       vars(G:PIM, SHF, S:FO_perc),
       funs(suppressWarnings(as.numeric(.)))   ## Warning: In evalq(as.numeric(G), <environment>) : NAs introduced by coercion
-      ) %>%
+    ) %>%
     dplyr::mutate(
       player_team_num = paste0(Team, player_num),
       player =          roster_data$player[match(player_team_num, roster_data$player_team_num)],
@@ -1147,22 +590,22 @@ sc.event_summary <- function(game_id_fun, season_id_fun, event_summary_data, ros
       game_date =       game_info_data$game_date,
       season =          season_id_fun,
       session =         game_info_data$session
-      ) %>%
+    ) %>%
     filter(!is.na(player)) %>%
     mutate_at(
       vars(TOI_all, AVG, TOI_PP, TOI_SH, TOI_EV),
       funs(suppressWarnings(round(period_to_seconds(ms(.)) / 60, 2)))
-      ) %>%
+    ) %>%
     mutate_all(funs(ifelse(is.na(.), 0, .))) %>%
     select(
       player, position, position_type, game_id, game_date, season, session, Team, Opponent, is_home,
       TOI_all, TOI_EV, TOI_PP, TOI_SH, SHF, AVG,
       G, A, P, P_M, PEN, PIM, S, A_B, MS, HT, GV, TK, BS, FW, FL, FO_perc
-      ) %>%
+    ) %>%
     arrange(is_home, player) %>%
     data.frame()
 
-  }
+}
 
 
 ## ----------------------- ##
@@ -1177,7 +620,7 @@ sc.prepare_events_HTM <- function(game_id_fun, season_id_fun, events_data, game_
     matrix(
       byrow = TRUE,
       ncol = 8
-      ) %>%
+    ) %>%
     data.frame(stringsAsFactors = FALSE) %>%
     select(
       eventIdx =          X1,
@@ -1188,7 +631,7 @@ sc.prepare_events_HTM <- function(game_id_fun, season_id_fun, events_data, game_
       event_description = X6,
       away_skaters =      X7,
       home_skaters =      X8
-      ) %>%
+    ) %>%
     filter(game_period != "Per") %>%
     dplyr::mutate(
       eventIdx =     as.numeric(eventIdx),
@@ -1201,14 +644,14 @@ sc.prepare_events_HTM <- function(game_id_fun, season_id_fun, events_data, game_
           event_type %in% c("PSTR", "PEND", "SOC", "GEND") ~   str_extract(event_description, "[0-9]+:[0-9]+\\s*[A-Z]+"),
           event_type == "PENL" ~ str_extract(event_description, "[(][0-9]+\\s[a-z]*[)]") %>% gsub("[(]|[)]|\\s*", "", .),
           event_type == "CHL" ~  str_extract(event_description, "-[a-zA-Z\\s]+-") %>% gsub("\\s*-|-\\s*", "", .)
-          ),
+        ),
       ## Fix period & game end recording errors (rare)
       times =
         case_when(
           event_type == "PEND" & game_period == 4 & max(game_period) > 4 & game_info_data$session == "R" & times == "-16:0-120:00" ~ "5:000:00",
           event_type %in% c("PEND", "GEND") & game_period == 4 & max(game_period) == 4 & game_info_data$session == "R" & times == "-16:0-120:00" ~ last(na.omit(times)),
           TRUE ~ times
-          ),
+        ),
       time_elapsed = str_extract(times, "[0-9]+:[0-9]{2}"),
       game_seconds = suppressWarnings(period_to_seconds(ms(time_elapsed))),
       game_seconds =
@@ -1221,10 +664,10 @@ sc.prepare_events_HTM <- function(game_id_fun, season_id_fun, events_data, game_
           game_period == 6 & game_info_data$session == "P" ~ game_seconds + 6000,
           game_period == 7 & game_info_data$session == "P" ~ game_seconds + 7200,
           TRUE ~ game_seconds
-          ),
+        ),
       home_team =    game_info_data$home_team,
       away_team =    game_info_data$away_team
-      ) %>%
+    ) %>%
     group_by(eventIdx) %>%
     dplyr::mutate(
       event_description = gsub("\\bPHX\\b", "ARI", event_description),   ## change PHX to ARI in event description
@@ -1245,7 +688,7 @@ sc.prepare_events_HTM <- function(game_id_fun, season_id_fun, events_data, game_
 
           event_type == "PENL" & grepl("TEAM", event_description) & grepl("#[0-9]+", event_description) ~  ## bench minors (delay of game, faceoff violation, etc.)
             paste(event_team, str_extract(event_description, "#[0-9]+"))
-          ),
+        ),
       event_player_2 =
         case_when(
           event_type %in% c("BLOCK", "FAC", "HIT", "PENL") & length(str_extract_all(event_description, "#[0-9]+")[[1]]) > 1 ~  ## ensure a player is present
@@ -1253,28 +696,28 @@ sc.prepare_events_HTM <- function(game_id_fun, season_id_fun, events_data, game_
 
           event_type == "GOAL" & length(str_extract_all(event_description, "#[0-9]+")[[1]]) > 1 ~  ## ensure a player is present
             paste(event_team, str_extract_all(event_description, "#[0-9]+")[[1]][2])
-          ),
+        ),
       event_player_3 =
         case_when(
           event_type == "GOAL" & length(str_extract_all(event_description, "#[0-9]+")[[1]]) > 2 ~  ## ensure a player is present
             paste(event_team, str_extract_all(event_description, "#[0-9]+")[[1]][3])
-          ),
+        ),
 
       event_zone = str_extract(event_description, "[a-zA-Z]{3}\\.\\s*[zZ]one") %>% gsub("\\.\\s*[zZ]one", "", .)
-      ) %>%
+    ) %>%
     ungroup() %>%
     mutate_at(
       vars(event_player_1:event_player_3),
       funs(gsub("#|\\s*", "", .))
-      ) %>%
+    ) %>%
     mutate_at(
       vars(event_player_1:event_player_3),  ## remove event players for true team/bench penalties
       funs(ifelse(grepl("[tT]oo\\s*many\\s*men|[A-Z]+\\s*[A-Z]+\\s*[bB]ench[(]", event_description), NA, .))
-      ) %>%
+    ) %>%
     select(-c(home_skaters, away_skaters)) %>%
     data.frame()
 
-  }
+}
 
 ## Prepare Events Data (API)
 sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) {
@@ -1288,28 +731,28 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
         rename(
           away.goals = away,
           home.goals = home
-          )
-      ) %>%
+        )
+    ) %>%
     dplyr::mutate(eventIdx = eventIdx + 1) %>%
     left_join(
       events_data_API$liveData$plays$allPlays$result %>%  ## removed separate parsing of "strength" endpoint
         dplyr::mutate(eventIdx = row_number()),
       by = "eventIdx"
-      ) %>%
+    ) %>%
     left_join(
       events_data_API$liveData$plays$allPlays$coordinates %>%
         dplyr::mutate(eventIdx = row_number()),
       by = "eventIdx"
-      ) %>%
+    ) %>%
     left_join(
       events_data_API$liveData$plays$allPlays$team %>%
         dplyr::mutate(
           triCode =  Team_ID$Team[match(id, Team_ID$ID)], ## use HTM source team triCodes
           eventIdx = row_number()
-          ) %>%
+        ) %>%
         rename(teamName = name),
       by = "eventIdx"
-      ) %>%
+    ) %>%
     select(
       eventIdx,
       game_period = period,
@@ -1319,7 +762,7 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
       event_description = description,
       coords_x = x,
       coords_y = y
-      ) %>%
+    ) %>%
     dplyr::mutate(
       game_seconds = suppressWarnings(period_to_seconds(ms(time_elapsed))),
       game_seconds =
@@ -1332,7 +775,7 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
           game_period == 6 & game_info_data$session == "P" ~ game_seconds + 6000,
           game_period == 7 & game_info_data$session == "P" ~ game_seconds + 7200,
           TRUE ~ game_seconds
-          ),
+        ),
       event_type = toupper(gsub("gamecenter", "", event_type)),  ## remove excessive "gamecenter" text and ensure capitalization
       event_type =
         case_when(
@@ -1346,8 +789,8 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
           event_type == "GIVEAWAY" ~ "GIVE",
           event_type == "TAKEAWAY" ~ "TAKE",
           TRUE ~ event_type
-          )
-      ) %>%
+        )
+    ) %>%
     filter(event_type %in% c("TAKE", "GIVE", "MISS", "HIT", "SHOT", "BLOCK", "GOAL", "PENL", "FAC")) %>%
     data.frame()
 
@@ -1364,9 +807,9 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
         Team =      game_info_data$home_team,
         number =    na_if_null(events_data_API$liveData$boxscore$teams$home$players[[i]]$jerseyNumber),
         stringsAsFactors = FALSE
-        )
+      )
 
-      } %>%
+    } %>%
       data.frame(row.names = NULL),
 
     ## Away players
@@ -1378,11 +821,11 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
         Team =      game_info_data$away_team,
         number =    na_if_null(events_data_API$liveData$boxscore$teams$away$players[[i]]$jerseyNumber),
         stringsAsFactors = FALSE
-        )
+      )
 
-      } %>%
+    } %>%
       data.frame(row.names = NULL)
-    ) %>%
+  ) %>%
     dplyr::mutate(player_team_num = paste0(Team, number))
 
 
@@ -1398,24 +841,24 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
         event_player_1 = as.character(events_players_list_API[[i]]$player$id[1]),
         event_player_2 = as.character(events_players_list_API[[i]]$player$id[2]),
         stringsAsFactors = FALSE
-        )
+      )
 
-      } else {
+    } else {
 
-        data.frame(
-          eventIdx =       i,
-          event_player_1 = NA,
-          event_player_2 = NA,
-          stringsAsFactors = FALSE
-          )
+      data.frame(
+        eventIdx =       i,
+        event_player_1 = NA,
+        event_player_2 = NA,
+        stringsAsFactors = FALSE
+      )
 
-        }
+    }
 
-    } %>%
+  } %>%
     dplyr::mutate(
       event_player_1 = roster_data_API$player_team_num[match(event_player_1, roster_data_API$player_ID)],
       event_player_2 = roster_data_API$player_team_num[match(event_player_2, roster_data_API$player_ID)]
-      ) %>%
+    ) %>%
     data.frame()
 
 
@@ -1430,12 +873,12 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
         case_when(
           event_type == "FAC" & event_team == game_info_data$away_team ~ event_player_1,
           event_type == "FAC" & event_team == game_info_data$home_team ~ event_player_2
-          ),
+        ),
       hold_face_2 =
         case_when(
           event_type == "FAC" & event_team == game_info_data$away_team ~ event_player_2,
           event_type == "FAC" & event_team == game_info_data$home_team ~ event_player_1
-          ),
+        ),
       event_player_1 = ifelse(event_type == "BLOCK", hold_block_1, event_player_1),
       event_player_2 = ifelse(event_type == "BLOCK", hold_block_2, event_player_2),
       event_player_1 = ifelse(event_type == "FAC", hold_face_1, event_player_1),
@@ -1444,12 +887,12 @@ sc.prepare_events_API <- function(game_id_fun, events_data_API, game_info_data) 
       event_team =     ifelse(event_type == "BLOCK",
                               ifelse(event_team == game_info_data$home_team, game_info_data$away_team, game_info_data$home_team),
                               event_team
-                              )
-      ) %>%
+      )
+    ) %>%
     select(game_period, game_seconds, event_type, event_team, event_description, coords_x, coords_y, event_player_1) %>%
     data.frame()
 
-  }
+}
 
 
 ## ----------------------- ##
@@ -1479,16 +922,16 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
       shifts_list$home_shifts_text[which(shifts_list$home_shifts_text %in% c("Shift #", "Présence #Shift #"))[index]:(which(shifts_list$home_shifts_text %in% c("SHF", "PR/SHF"))[index] - 3)] %>%
         matrix(ncol = 6,
                byrow = TRUE
-               ) %>%
+        ) %>%
         data.frame(stringsAsFactors = FALSE) %>%
         dplyr::mutate(player =         player_home_df$player[i],
-               num_last_first = player_home_df$num_last_first[i],
-               event_team =     game_info_data$home_team
-               ) %>%
+                      num_last_first = player_home_df$num_last_first[i],
+                      event_team =     game_info_data$home_team
+        ) %>%
         filter(X2 != "Per") %>%
         data.frame()
 
-      } %>%
+    } %>%
       mutate_all(funs(ifelse(. == "", NA, .))) %>%
       select(7:9, 1:5),
 
@@ -1500,28 +943,28 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
       shifts_list$away_shifts_text[which(shifts_list$away_shifts_text %in% c("Shift #", "Présence #Shift #"))[index]:(which(shifts_list$away_shifts_text %in% c("SHF", "PR/SHF"))[index] - 3)] %>%
         matrix(ncol = 6,
                byrow = TRUE
-               ) %>%
+        ) %>%
         data.frame(stringsAsFactors = FALSE) %>%
         dplyr::mutate(player =         player_away_df$player[i],
-               num_last_first = player_away_df$num_last_first[i],
-               event_team =     game_info_data$away_team
-               ) %>%
+                      num_last_first = player_away_df$num_last_first[i],
+                      event_team =     game_info_data$away_team
+        ) %>%
         filter(X2 != "Per") %>%
         data.frame()
 
-      } %>%
+    } %>%
       mutate_all(funs(ifelse(. == "", NA, .))) %>%
       select(7:9, 1:5)
 
-    ) %>%
+  ) %>%
     left_join(
       roster_data %>% select(num_last_first, player_team_num, position_type, position),
       by = "num_last_first"
-      ) %>%
+    ) %>%
     select(
       player, num_last_first, player_team_num, position, position_type,
       everything()
-      ) %>%
+    ) %>%
     data.frame()
 
   ## Rename
@@ -1544,15 +987,15 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
               "20:00 / 0:00",
 
             TRUE ~ shift_end
-            )),
+          )),
         shift_mod =
           ## Indicate if shift was modified
           suppressWarnings(ifelse(
             position != "G" & as.numeric(str_extract(duration, "^[0-9]+")) > 30 & as.numeric(str_extract(shift_start, "^[0-9]+")) >= 17 &
               (as.numeric(game_period) <= 3 | game_info_data$session == "P"),
             1, 0
-            ))
-        ) %>%
+          ))
+      ) %>%
       ## Remove "incorrect" shifts (recording error resulting in additional "phantom" shift being created)
       ungroup() %>%
       dplyr::mutate(filtered = ifelse(shift_start == "20:00 / 0:00" & lag(shift_end) == "20:00 / 0:00", 1, 0)) %>%
@@ -1560,11 +1003,11 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
       select(-filtered) %>%
       data.frame()
 
-    } else {
-      shifts_parse_full <- shifts_parse_full %>%
-        dplyr::mutate(shift_mod = 0)
+  } else {
+    shifts_parse_full <- shifts_parse_full %>%
+      dplyr::mutate(shift_mod = 0)
 
-      }
+  }
 
   ## Add data / order
   shifts_parsed <- shifts_parse_full %>%
@@ -1588,7 +1031,7 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
           game_period == 6 & game_info_data$session == "P" ~ seconds_start + 6000,
           game_period == 7 & game_info_data$session == "P" ~ seconds_start + 7200,
           TRUE ~ seconds_start
-          ),
+        ),
       shift_end =     gsub(" / .*", "", shift_end),
       seconds_end =   suppressWarnings(period_to_seconds(ms(shift_end))),
       seconds_end =
@@ -1601,14 +1044,14 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
           game_period == 6 & game_info_data$session == "P" ~ seconds_end + 6000,
           game_period == 7 & game_info_data$session == "P" ~ seconds_end + 7200,
           TRUE ~ seconds_end
-          ),
+        ),
       seconds_duration = seconds_end - seconds_start
-      ) %>%
+    ) %>%
     select(
       player, num_last_first, player_team_num, position, position_type, game_id, game_date, season,
       event_team, game_period, shift_num, seconds_start, seconds_end, seconds_duration, shift_start, shift_end, duration,
       home_team, away_team, shift_mod
-      ) %>%
+    ) %>%
     arrange(seconds_start, event_team) %>%
     data.frame()
 
@@ -1634,19 +1077,19 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
       home_shifts_text_dup[(which(home_shifts_text_dup %in% c("SHF", "PR/SHF"))[index] + 6):(which(home_shifts_text_dup %in% c("Shift #", "Présence #Shift #"))[index + 1] - 8)] %>%
         matrix(ncol = 7,
                byrow = TRUE
-               ) %>%
+        ) %>%
         data.frame(stringsAsFactors = FALSE) %>%
         dplyr::mutate(player =         player_home_df$player[i],
-               num_last_first = player_home_df$num_last_first[i],
-               event_team =     game_info_data$home_team
-               ) %>%
+                      num_last_first = player_home_df$num_last_first[i],
+                      event_team =     game_info_data$home_team
+        ) %>%
         data.frame()
 
-      } %>%
+    } %>%
       mutate_at(
         vars(X1:X7),
         funs(gsub("\\s", NA, .))  ## turn blanks into NAs
-        ),
+      ),
 
     ## Away Period Sums
     foreach(i = 1:nrow(player_away_df), .combine = bind_rows) %do% {
@@ -1656,21 +1099,21 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
       away_shifts_text_dup[(which(away_shifts_text_dup %in% c("SHF", "PR/SHF"))[index] + 6):(which(away_shifts_text_dup %in% c("Shift #", "Présence #Shift #"))[index + 1] - 8)] %>%
         matrix(ncol = 7,
                byrow = TRUE
-               ) %>%
+        ) %>%
         data.frame(stringsAsFactors = FALSE) %>%
         dplyr::mutate(player =         player_away_df$player[i],
-               num_last_first = player_away_df$num_last_first[i],
-               event_team =     game_info_data$away_team
-               ) %>%
+                      num_last_first = player_away_df$num_last_first[i],
+                      event_team =     game_info_data$away_team
+        ) %>%
         data.frame()
 
-      } %>%
+    } %>%
       mutate_at(
         vars(X1:X7),
         funs(gsub("\\s", NA, .))  ## turn blanks into NAs
-        )
+      )
 
-    )
+  )
 
   colnames(period_sum_full)[1:7] <- c("Per", "SHF", "AVG", "TOI", "EV_TOT", "PP_TOT", "SH_TOT")
 
@@ -1685,19 +1128,19 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
       Team =      event_team,
       Opponent =  ifelse(Team == game_info_data$home_team, game_info_data$home_team, game_info_data$away_team),
       is_home =   1 * (Team == game_info_data$home_team)
-      ) %>%
+    ) %>%
     left_join(
       roster_data %>% select(num_last_first, player_team_num, position_type, position),
       by = "num_last_first"
-      ) %>%
+    ) %>%
     mutate_at(
       vars(Per, SHF),
       funs(suppressWarnings(as.numeric(.)))
-      ) %>%
+    ) %>%
     mutate_at(
       vars(AVG, TOI, EV_TOT, PP_TOT, SH_TOT),
       funs(suppressWarnings(round(period_to_seconds(ms(.)) / 60, 2)))  ## convert "00:00" format to minutes
-      ) %>%
+    ) %>%
     select(
       player, num_last_first, player_team_num, position, position_type,
       game_id, game_date, season, session, Team, Opponent, is_home,
@@ -1707,7 +1150,7 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
       TOI_EV =  EV_TOT,
       TOI_PP = PP_TOT,
       TOI_SH = SH_TOT
-      ) %>%
+    ) %>%
     data.frame()
 
 
@@ -1715,9 +1158,9 @@ sc.shifts_parse <- function(game_id_fun, season_id_fun, shifts_list, roster_data
   return_list <- list(
     shifts_parse =        shifts_parsed,
     player_period_sums =  period_sum_full
-    )
+  )
 
-  }
+}
 
 ## Shift Backup: Process API Source if HTM source fails
 sc.shifts_process_API <- function(game_id_fun, game_info_data) {
@@ -1741,9 +1184,9 @@ sc.shifts_process_API <- function(game_id_fun, game_info_data) {
         Team =      game_info_data$home_team,
         number =    na_if_null(roster_API_list$liveData$boxscore$teams$home$players[[i]]$jerseyNumber),
         stringsAsFactors = FALSE
-        )
+      )
 
-      } %>%
+    } %>%
       data.frame(row.names = NULL),
 
     ## Away players
@@ -1755,12 +1198,12 @@ sc.shifts_process_API <- function(game_id_fun, game_info_data) {
         Team =      game_info_data$away_team,
         number =    na_if_null(roster_API_list$liveData$boxscore$teams$away$players[[i]]$jerseyNumber),
         stringsAsFactors = FALSE
-        )
+      )
 
-      } %>%
+    } %>%
       data.frame(row.names = NULL)
 
-    ) %>%
+  ) %>%
     dplyr::mutate(player_team_num = paste0(Team, number))
 
 
@@ -1774,11 +1217,11 @@ sc.shifts_process_API <- function(game_id_fun, game_info_data) {
         case_when(
           teamAbbrev == "SJS" ~ "S.J",
           TRUE ~ teamAbbrev
-          ),
+        ),
       teamName = ifelse(teamAbbrev == "MTL", "MONTREAL CANADIENS", teamName),
       player_num = as.numeric(player_num),
       player_team_num = paste0(teamAbbrev, player_num)
-      ) %>%
+    ) %>%
     data.frame()
 
   shifts_API_titles <- shifts_API_df %>%
@@ -1794,12 +1237,12 @@ sc.shifts_process_API <- function(game_id_fun, game_info_data) {
   home_shifts_titles <- c(
     unique(filter(shifts_API_df, teamAbbrev == game_info_data$home_team)$teamName),
     filter(shifts_API_titles, teamAbbrev == game_info_data$home_team)$num_last_first
-    )
+  )
 
   away_shifts_titles <- c(
     unique(filter(shifts_API_df, teamAbbrev == game_info_data$away_team)$teamName),
     filter(shifts_API_titles, teamAbbrev == game_info_data$away_team)$num_last_first
-    )
+  )
 
 
   return(
@@ -1807,10 +1250,10 @@ sc.shifts_process_API <- function(game_id_fun, game_info_data) {
       shifts_data =        shifts_API_df,
       home_shifts_titles = home_shifts_titles,
       away_shifts_titles = away_shifts_titles
-      )
     )
+  )
 
-  }
+}
 
 ## Shift Backup: Parse API Source shifts data
 sc.shifts_parse_API <- function(game_id_fun, shifts_list, roster_data, game_info_data) {
@@ -1821,7 +1264,7 @@ sc.shifts_parse_API <- function(game_id_fun, shifts_list, roster_data, game_info
       roster_data %>%
         select(player_team_num, num_last_first, player, position, position_type),
       by = "player_team_num"
-      ) %>%
+    ) %>%
     dplyr::mutate(
       game_id = game_info_data$game_id,
       game_date = game_info_data$game_date,
@@ -1841,7 +1284,7 @@ sc.shifts_parse_API <- function(game_id_fun, shifts_list, roster_data, game_info
           game_period == 6 & game_info_data$session == "P" ~ seconds_start + 6000,
           game_period == 7 & game_info_data$session == "P" ~ seconds_start + 7200,
           TRUE ~ seconds_start
-          ),
+        ),
       seconds_end = suppressWarnings(period_to_seconds(ms(endTime))),
       seconds_end =
         case_when(
@@ -1853,9 +1296,9 @@ sc.shifts_parse_API <- function(game_id_fun, shifts_list, roster_data, game_info
           game_period == 6 & game_info_data$session == "P" ~ seconds_end + 6000,
           game_period == 7 & game_info_data$session == "P" ~ seconds_end + 7200,
           TRUE ~ seconds_end
-          ),
+        ),
       seconds_duration = seconds_end - seconds_start
-      ) %>%
+    ) %>%
     select(
       player, num_last_first, player_team_num, position, position_type, game_id, game_date, season,
       event_team = teamAbbrev,
@@ -1866,7 +1309,7 @@ sc.shifts_parse_API <- function(game_id_fun, shifts_list, roster_data, game_info
       shift_end = endTime,
       duration,
       home_team, away_team, shift_mod
-      ) %>%
+    ) %>%
     arrange(player, game_period, seconds_start) %>%
     data.frame()
 
@@ -1875,9 +1318,9 @@ sc.shifts_parse_API <- function(game_id_fun, shifts_list, roster_data, game_info
   return_list <- list(
     shifts_parse =        shifts_parse_API,
     player_period_sums =  data.frame()  ## not available from API source
-    )
+  )
 
-  }
+}
 
 ## Finalize Shifts Data (HTM or API source)
 sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, game_info_data, fix_shifts) {
@@ -1897,10 +1340,10 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
         seconds_end =      ifelse(seconds_end > max(events_data_HTM$game_seconds) & shift_mod_hold == 1 & game_period > 3, max(events_data_HTM$game_seconds), seconds_end),
         seconds_duration = ifelse(seconds_duration < 0 & shift_mod_hold == 1, seconds_end - seconds_start, seconds_duration),
         shift_mod =        ifelse(shift_mod_hold == 1, 1, shift_mod)
-        ) %>%
+      ) %>%
       select(-shift_mod_hold)
 
-    }
+  }
 
   ## Fix shift_end missing issue (very rare)
   if (fix_shifts == TRUE & sum(is.na(shifts_parsed$seconds_end)) > 0 & sum(is.na(shifts_parsed$seconds_duration)) > 0) {
@@ -1909,10 +1352,10 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
         shift_mod =        ifelse(is.na(seconds_end) & is.na(seconds_duration) & !is.na(duration), 1, shift_mod),
         seconds_end =      ifelse(is.na(seconds_end) & !is.na(duration), seconds_start + suppressWarnings(period_to_seconds(ms(duration))), seconds_end),
         seconds_duration = ifelse(is.na(seconds_duration) & !is.na(duration), seconds_end - seconds_start, seconds_duration)
-        ) %>%
+      ) %>%
       data.frame()
 
-    }
+  }
 
   ## Final seconds_end check (NAs and negative shift lengths): "zero" shift
   shifts_parsed <- shifts_parsed %>%
@@ -1920,7 +1363,7 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
       shift_mod =        ifelse(is.na(seconds_end) | seconds_end < 0, 1, shift_mod),
       seconds_duration = ifelse(is.na(seconds_end) | seconds_end < 0, 0, seconds_duration),
       seconds_end =      ifelse(is.na(seconds_end) | seconds_end < 0, seconds_start, seconds_end)
-      ) %>%
+    ) %>%
     data.frame()
 
 
@@ -1937,16 +1380,16 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
       dplyr::mutate(
         is_home = 1 * (event_team == home_team),
         check =   1 * (period_to_seconds(ms(duration)) == period_to_seconds(ms(shift_end)) - period_to_seconds(ms(shift_start)))
-        ) %>%
+      ) %>%
       select(player, position, game_id, is_home, event_team, game_period, seconds_start:seconds_duration, check) %>%
       data.frame()
 
     ## Ensure each shift end is after the shift start
     if (sum(hold_goalie_shifts$check) != nrow(hold_goalie_shifts)) {
       duration_problem <- 1
-      } else {
-        duration_problem <- 0
-        }
+    } else {
+      duration_problem <- 0
+    }
 
 
     ## Transform goalie shifts data to long form
@@ -1981,7 +1424,7 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
           seconds =     as.numeric(seconds),
           game_period = as.numeric(game_period),
           is_home =     hold_goalie_shifts$is_home[match(player, hold_goalie_shifts$player)]
-          ) %>%
+        ) %>%
         arrange(seconds, index) %>%
         data.frame(),
       hold_away_goalies <- hold_away_goalies %>%
@@ -1992,10 +1435,10 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
           seconds =     as.numeric(seconds),
           game_period = as.numeric(game_period),
           is_home =     hold_goalie_shifts$is_home[match(player, hold_goalie_shifts$player)]
-          ) %>%
+        ) %>%
         arrange(seconds, index) %>%
         data.frame()
-      )
+    )
 
     ## Check if shift starts and ends line up
     hold_check_goalie_shifts <- hold_ALL_goalies %>%
@@ -2003,25 +1446,25 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
         check = ifelse(column == "seconds_end" & lag(column) == "seconds_start", 1, 0),
         check = ifelse(column == "seconds_start" & lead(column) == "seconds_end", 1, check),
         check = ifelse(is.na(check), 0, check)
-        )
+      )
 
     if (sum(hold_check_goalie_shifts$check) != nrow(hold_check_goalie_shifts)) {
       order_problem <- 1
-      } else {
-        order_problem <- 0
-        }
+    } else {
+      order_problem <- 0
+    }
 
 
     ## Check if all periods have correct goalie shift starts
     hold_ALL_goalies <- bind_rows(
       hold_home_goalies,
       hold_away_goalies
-      ) %>%
+    ) %>%
       group_by(game_period, is_home) %>%
       dplyr::mutate(
         start_all = first(seconds),
         end_all =   last(seconds)
-        ) %>%
+      ) %>%
       summarise_at(vars(start_all, end_all), funs(first)) %>%
       group_by(game_period, is_home) %>%
       dplyr::mutate(check = 1 * ((((start_all + 1200) / 1200) == game_period) & start_all < end_all)) %>%  ## verify shift_start == period start / verify shift_start before shift_end
@@ -2030,11 +1473,11 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
     if ((length(unique(filter(hold_ALL_goalies, is_home == 1)$game_period)) != max(shifts_parsed$game_period) |
          length(unique(filter(hold_ALL_goalies, is_home == 0)$game_period)) != max(shifts_parsed$game_period)) |
         sum(hold_ALL_goalies$check) != nrow(hold_ALL_goalies)
-        ) {
+    ) {
       period_problem <- 1
-      } else {
-        period_problem <- 0
-        }
+    } else {
+      period_problem <- 0
+    }
 
 
     ## Impute new goalie shifts if error identified
@@ -2049,14 +1492,14 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
         unique(filter(hold_check_goalie_shifts, is_home == 1, check == 0)$game_period),                     ## Locate problem periods for shift start/end order problems
         unique(filter(hold_ALL_goalies, is_home == 1, check == 0)$game_period),                             ## Locate problem periods for period start problems
         which(!period_vec %in% hold_ALL_goalies$game_period[which(hold_ALL_goalies$is_home == 1)] == TRUE)  ## Locate problem periods for missing periods problems
-        ))
+      ))
 
       problem_vec_away <- unique(c(
         unique(filter(hold_goalie_shifts, is_home == 0, check == 0)$game_period),                           ## Locate problem periods for shift duration problems
         unique(filter(hold_check_goalie_shifts, is_home == 0, check == 0)$game_period),                     ## Locate problem periods for shift start/end order problems
         unique(filter(hold_ALL_goalies, is_home == 0, check == 0)$game_period),                             ## Locate problem periods for period start problems
         which(!period_vec %in% hold_ALL_goalies$game_period[which(hold_ALL_goalies$is_home == 0)] == TRUE)  ## Locate problem periods for missing periods problems
-        ))
+      ))
 
 
       ## Create new goalie shifts for periods with identified issues
@@ -2072,43 +1515,43 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
                 position == "G",
                 event_team == game_info_data$home_team,
                 game_period == min(problem_vec_home) - 1
-                ) %>%
+              ) %>%
               filter(dplyr::row_number() == max(dplyr::row_number())) %>%  ## filter to last goalie shifts before problem period
               data.frame()
 
             ## Verify period 2 is fine if not - use this shift as template
-            } else if (!2 %in% problem_vec_home) {
-              new_goalie_shift_home <- shifts_parsed %>%
-                filter(
-                  position == "G",
-                  event_team == game_info_data$home_team,
-                  game_period == 2
-                  ) %>%
-                data.frame()
+          } else if (!2 %in% problem_vec_home) {
+            new_goalie_shift_home <- shifts_parsed %>%
+              filter(
+                position == "G",
+                event_team == game_info_data$home_team,
+                game_period == 2
+              ) %>%
+              data.frame()
 
-              ## Verify period 3 is fine if not - use this shift as template
-              } else if (!3 %in% problem_vec_home) {
-                new_goalie_shift_home <- shifts_parsed %>%
-                  filter(
-                    position == "G",
-                    event_team == game_info_data$home_team,
-                    game_period == 3
-                    ) %>%
-                  data.frame()
+            ## Verify period 3 is fine if not - use this shift as template
+          } else if (!3 %in% problem_vec_home) {
+            new_goalie_shift_home <- shifts_parsed %>%
+              filter(
+                position == "G",
+                event_team == game_info_data$home_team,
+                game_period == 3
+              ) %>%
+              data.frame()
 
-                }
+          }
 
           ## Create additional rows if more are needed
           if (length(problem_vec_home) == 2) {
             new_goalie_shift_home <- bind_rows(new_goalie_shift_home, new_goalie_shift_home)
 
-            } else if (length(problem_vec_home) == 3) {
-              new_goalie_shift_home <- bind_rows(new_goalie_shift_home, new_goalie_shift_home, new_goalie_shift_home)
+          } else if (length(problem_vec_home) == 3) {
+            new_goalie_shift_home <- bind_rows(new_goalie_shift_home, new_goalie_shift_home, new_goalie_shift_home)
 
-              } else if (length(problem_vec_home) == 4) {
-                new_goalie_shift_home <- bind_rows(new_goalie_shift_home, new_goalie_shift_home, new_goalie_shift_home, new_goalie_shift_home)
+          } else if (length(problem_vec_home) == 4) {
+            new_goalie_shift_home <- bind_rows(new_goalie_shift_home, new_goalie_shift_home, new_goalie_shift_home, new_goalie_shift_home)
 
-                }
+          }
 
           ## Create new shift(s)
           new_goalie_shift_home <- new_goalie_shift_home %>%
@@ -2132,15 +1575,15 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
               home_team =        game_info_data$home_team,
               away_team =        game_info_data$away_team,
               shift_mod =        1
-              ) %>%
+            ) %>%
             select(colnames(shifts_parsed)) %>%
             data.frame()
 
-          } else {
-            new_goalie_shift_home <- data.frame(matrix(ncol = ncol(shifts_parsed), nrow = 0))
-            colnames(new_goalie_shift_home) <- colnames(shifts_parsed)
+        } else {
+          new_goalie_shift_home <- data.frame(matrix(ncol = ncol(shifts_parsed), nrow = 0))
+          colnames(new_goalie_shift_home) <- colnames(shifts_parsed)
 
-            }
+        }
 
 
         ## Create new AWAY goalie shift(s)
@@ -2153,43 +1596,43 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
                 position == "G",
                 event_team == game_info_data$away_team,
                 game_period == min(problem_vec_away) - 1
-                ) %>%
+              ) %>%
               filter(dplyr::row_number() == max(dplyr::row_number())) %>%  ## filter to last goalie shifts before problem period
               data.frame()
 
             ## Verify period 2 is fine if not
-            } else if (!2 %in% problem_vec_away) {
-              new_goalie_shift_away <- shifts_parsed %>%
-                filter(
-                  position == "G",
-                  event_team == game_info_data$away_team,
-                  game_period == 2
-                  ) %>%
+          } else if (!2 %in% problem_vec_away) {
+            new_goalie_shift_away <- shifts_parsed %>%
+              filter(
+                position == "G",
+                event_team == game_info_data$away_team,
+                game_period == 2
+              ) %>%
               data.frame()
 
-              ## Verify period 3 is fine if not
-              } else if (!3 %in% problem_vec_away) {
-                new_goalie_shift_away <- shifts_parsed %>%
-                  filter(
-                    position == "G",
-                    event_team == game_info_data$away_team,
-                    game_period == 3
-                    ) %>%
-                  data.frame()
+            ## Verify period 3 is fine if not
+          } else if (!3 %in% problem_vec_away) {
+            new_goalie_shift_away <- shifts_parsed %>%
+              filter(
+                position == "G",
+                event_team == game_info_data$away_team,
+                game_period == 3
+              ) %>%
+              data.frame()
 
-                }
+          }
 
           ## Create additional rows if more are needed
           if (length(problem_vec_away) == 2) {
             new_goalie_shift_away <- bind_rows(new_goalie_shift_away, new_goalie_shift_away)
 
-            } else if (length(problem_vec_away) == 3) {
-              new_goalie_shift_away <- bind_rows(new_goalie_shift_away, new_goalie_shift_away, new_goalie_shift_away)
+          } else if (length(problem_vec_away) == 3) {
+            new_goalie_shift_away <- bind_rows(new_goalie_shift_away, new_goalie_shift_away, new_goalie_shift_away)
 
-              } else if (length(problem_vec_away) == 4) {
-                new_goalie_shift_away <- bind_rows(new_goalie_shift_away, new_goalie_shift_away, new_goalie_shift_away, new_goalie_shift_away)
+          } else if (length(problem_vec_away) == 4) {
+            new_goalie_shift_away <- bind_rows(new_goalie_shift_away, new_goalie_shift_away, new_goalie_shift_away, new_goalie_shift_away)
 
-                }
+          }
 
           ## Create new shift(s)
           new_goalie_shift_away <- new_goalie_shift_away %>%
@@ -2213,15 +1656,15 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
               home_team =        game_info_data$home_team,
               away_team =        game_info_data$away_team,
               shift_mod =        1
-              ) %>%
+            ) %>%
             select(colnames(shifts_parsed)) %>%
             data.frame()
 
-          } else {
-            new_goalie_shift_away <- data.frame(matrix(ncol = ncol(shifts_parsed), nrow = 0))
-            colnames(new_goalie_shift_away) <- colnames(shifts_parsed)
+        } else {
+          new_goalie_shift_away <- data.frame(matrix(ncol = ncol(shifts_parsed), nrow = 0))
+          colnames(new_goalie_shift_away) <- colnames(shifts_parsed)
 
-            }
+        }
 
 
         ## Bind new goalie shifts with original data
@@ -2232,7 +1675,7 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
               position == "G",
               event_team == game_info_data$home_team,
               !game_period %in% problem_vec_home
-              ),
+            ),
           new_goalie_shift_home,
           ## Away shifts
           shifts_parsed %>%
@@ -2240,9 +1683,9 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
               position == "G",
               event_team == game_info_data$away_team,
               !game_period %in% problem_vec_away
-              ),
+            ),
           new_goalie_shift_away
-          ) %>%
+        ) %>%
           arrange(seconds_start, event_team) %>%
           data.frame()
 
@@ -2251,28 +1694,28 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
         shifts_raw_hold <- bind_rows(
           shifts_parsed %>% filter(position != "G"),
           shifts_raw_goalie_fix
-          ) %>%
+        ) %>%
           dplyr::mutate(shift_mod = ifelse(is.na(shift_mod), 0, shift_mod)) %>%
           arrange(seconds_start, event_team) %>%
           data.frame()
 
-        }
-
       }
+
+    }
 
     ## Determine if goalies shifts were corrected
     if (exists("shifts_raw_hold")) {
       shifts_raw <- shifts_raw_hold
-      } else {
-        shifts_raw <- shifts_parsed
-        }
-
-
-
     } else {
       shifts_raw <- shifts_parsed
+    }
 
-      }
+
+
+  } else {
+    shifts_raw <- shifts_parsed
+
+  }
 
 
   ## ----------------------------------- ##
@@ -2296,10 +1739,10 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
       shifts_raw %>%
         filter(player != "MICHAEL.HUTCHINSON"),
       manual_goalie_shift
-      ) %>%
+    ) %>%
       arrange(seconds_start, event_team)
 
-    }
+  }
 
 
 
@@ -2313,11 +1756,11 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
       Team =     ifelse(event_team == home_team, home_team, away_team),
       Opponent = ifelse(event_team == home_team, away_team, home_team),
       is_home =  1 * (event_team == home_team)
-      ) %>%
+    ) %>%
     select(
       player, num_last_first, player_team_num, position, position_type, game_id, game_date, season, session, Team, Opponent, is_home,
       game_period, shift_num, seconds_start, seconds_end, seconds_duration, shift_start, shift_end, duration, shift_mod
-      ) %>%
+    ) %>%
     arrange(seconds_start, is_home) %>%
     data.frame()
 
@@ -2325,7 +1768,7 @@ sc.shifts_finalize <- function(game_id_fun, shifts_parse_data, events_data_HTM, 
   ## Return data
   return(player_shifts_final)
 
-  }
+}
 
 ## Create ON/OFF event types (HTM or API source)
 sc.shifts_create_events <- function(shifts_final_data) {
@@ -2337,17 +1780,17 @@ sc.shifts_create_events <- function(shifts_final_data) {
       dplyr::mutate(
         home_team = unique(filter(shifts_final_data, is_home == 1)$Team),
         away_team = unique(filter(shifts_final_data, is_home == 0)$Team)
-        ) %>%
+      ) %>%
       select(player_team_num, event_team = Team, game_id, game_period, seconds_start, home_team, away_team) %>%
       group_by(event_team, home_team, away_team, game_id, game_period, seconds_start) %>%
       dplyr::mutate(
         num = as.numeric(n()),
         players = paste(unique(player_team_num), collapse = ", ")
-        ) %>%
+      ) %>%
       summarise_at(
         vars(num, players),
         funs(first(.))
-        ) %>%
+      ) %>%
       dplyr::mutate(event_type = "ON") %>%
       rename(game_seconds = seconds_start) %>%
       data.frame(),
@@ -2356,29 +1799,29 @@ sc.shifts_create_events <- function(shifts_final_data) {
       dplyr::mutate(
         home_team = unique(filter(shifts_final_data, is_home == 1)$Team),
         away_team = unique(filter(shifts_final_data, is_home == 0)$Team)
-        ) %>%
+      ) %>%
       select(player_team_num, event_team = Team, game_id, game_period, seconds_end, home_team, away_team) %>%
       group_by(event_team, home_team, away_team, game_id, game_period, seconds_end) %>%
       dplyr::mutate(
         num = as.numeric(n()),
         players = paste(unique(player_team_num), collapse = ", ")
-        ) %>%
+      ) %>%
       summarise_at(
         vars(num, players),
         funs(first(.))
-        ) %>%
+      ) %>%
       dplyr::mutate(event_type = "OFF") %>%
       rename(game_seconds = seconds_end) %>%
       data.frame(),
     by = c("event_team", "home_team", "away_team", "game_id", "game_period", "game_seconds"),
     suffix = c("_on", "_off")
-    ) %>%
+  ) %>%
     dplyr::mutate(
       num_on = ifelse(is.na(num_on), 0, num_on),
       num_off = ifelse(is.na(num_off), 0, num_off),
       is_home = 1 * (event_team == home_team),
       event_type = "CHANGE"
-      ) %>%
+    ) %>%
     arrange(game_period, game_seconds, is_home) %>%
     select(game_id, game_seconds, game_period, event_team, event_type, num_on, num_off, players_on, players_off) %>%
     data.frame()
@@ -2387,7 +1830,7 @@ sc.shifts_create_events <- function(shifts_final_data) {
   ## Return data
   return(shifts_events)
 
-  }
+}
 
 
 ## -------------------- ##
@@ -2416,7 +1859,7 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
         select(-c(event_player_1)) %>%
         filter(group_count == 1),  ## filter out concurrent events
       by = c("game_period", "game_seconds", "event_type", "event_team")
-      ) %>%
+    ) %>%
     filter(!is.na(group_count)) %>%
     select(-c(group_count)) %>%
     data.frame()
@@ -2437,7 +1880,7 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
       filter(
         group_count > 1,           ## only act on problem rows
         event_type != "PENL"       ## not adding coordinates for concurrent penalties
-        ) %>%
+      ) %>%
       dplyr::mutate(index = row_number()) %>%
       group_by(game_period, game_seconds, event_type, event_player_1) %>%
       dplyr::mutate(same_check = n()) %>% ## determine if/which event_player_1s are the same
@@ -2454,7 +1897,7 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
         left_join(
           pbp_JSON_events_prob,
           by = c("game_period", "game_seconds", "event_type", "event_team", "event_player_1")
-          ) %>%
+        ) %>%
         filter(!is.na(group_count))
 
       ## Each event_player_1 is separate
@@ -2470,7 +1913,7 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
         dplyr::mutate(
           row =      row_number(),
           filtered = suppressWarnings(ifelse(row_number() == max(row) | row_number() == min(row), 1, 0))
-          ) %>%
+        ) %>%
         filter(filtered == 1) %>%
         ## Ensure new rows created from join are filtered out if something went wrong
         group_by(eventIdx) %>%
@@ -2488,7 +1931,7 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
         dplyr::mutate(
           row =      row_number(),
           filtered = suppressWarnings(ifelse(row_number() == max(row) | row_number() == min(row) | row_number() == min(row) + 4, 1, 0))
-          ) %>%
+        ) %>%
         filter(filtered == 1) %>%
         ## Ensure new rows created from join are filtered out if something went wrong
         group_by(eventIdx) %>%
@@ -2506,7 +1949,7 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
         dplyr::mutate(
           row =      row_number(),
           filtered = suppressWarnings(ifelse(row_number() == max(row) | row_number() == min(row) | row_number() == min(row) + 5 | row_number() == min(row) + 10, 1, 0))
-          ) %>%
+        ) %>%
         filter(filtered == 1) %>%
         ## Ensure new rows created from join are filtered out if something went wrong
         group_by(eventIdx) %>%
@@ -2525,10 +1968,10 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
         fix_df_API_2,
         fix_df_API_3,
         fix_df_API_4
-        ) %>%
+      ) %>%
         arrange(eventIdx)
 
-      }
+    }
 
 
     ## Join to data not effected by concurrent event issues
@@ -2536,16 +1979,16 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
       combine_events_reconcile_API <- bind_rows(
         combine_events_okay_API,
         combine_events_prob_API
-        ) %>%
+      ) %>%
         arrange(eventIdx) %>%
         data.frame()
 
-      } else {
-        combine_events_reconcile_API <- combine_events_okay_API
-
-        }
+    } else {
+      combine_events_reconcile_API <- combine_events_okay_API
 
     }
+
+  }
 
 
 
@@ -2557,10 +2000,10 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
   if (nrow(filter(pbp_JSON_events, group_count > 1, event_type != "PENL")) == 0) {
     combine_events_final_API <- combine_events_okay_API
 
-    } else {
-      combine_events_final_API <- combine_events_reconcile_API
+  } else {
+    combine_events_final_API <- combine_events_reconcile_API
 
-      }
+  }
 
 
   ## Final Join
@@ -2570,9 +2013,9 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
         select(
           eventIdx, game_period, game_seconds, event_type, coords_x, coords_y, event_team,
           event_description_alt = event_description
-          ),
+        ),
       by = c("eventIdx", "game_period", "game_seconds", "event_type", "event_team")
-      ) %>%
+    ) %>%
     data.frame()
 
 
@@ -2586,17 +2029,17 @@ sc.join_coordinates_API <- function(events_data_API, events_data_HTM) {
           select(
             eventIdx, game_period, game_seconds, event_type, coords_x, coords_y, event_team,
             event_description_alt = event_description
-            ),
+          ),
         by = c("eventIdx", "game_period", "game_seconds", "event_type", "event_team")
-        ) %>%
+      ) %>%
       data.frame()
 
-    }
+  }
 
 
   return(pbp_events_full)
 
-  }
+}
 
 ## Join coordinates (ESPN, backup)
 sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_data_HTM, roster_data, game_info_data) {
@@ -2606,10 +2049,10 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
     ESPN_team_IDs_update <- ESPN_team_IDs %>%
       dplyr::mutate(Team = ifelse(Team == "WPG", "ATL", Team))
 
-    } else {
-      ESPN_team_IDs_update <- ESPN_team_IDs
+  } else {
+    ESPN_team_IDs_update <- ESPN_team_IDs
 
-      }
+  }
 
 
   ## --------------------------- ##
@@ -2625,11 +2068,11 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
       game_period =       X5,
       team_ID_ESPN =      X15,
       event_description = X9
-      ) %>%
+    ) %>%
     mutate_at(
       vars(coords_x, coords_y, game_period),
       funs(as.numeric(.))
-      ) %>%
+    ) %>%
     dplyr::mutate(
       game_seconds = suppressWarnings(period_to_seconds(ms(time))),
       game_seconds =
@@ -2642,7 +2085,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
           game_period == 6 & game_info_data$session == "P" ~ game_seconds + 6000,
           game_period == 7 & game_info_data$session == "P" ~ game_seconds + 7200,
           TRUE ~ game_seconds
-          ),
+        ),
       ## Join in event types
       event_type = ESPN_codes$event[match(ESPN_type, ESPN_codes$code)],
       event_type =
@@ -2653,7 +2096,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
           event_type == "SOut" & grepl("MISS", event_description) ~ "MISS",
           event_type == "SOut" & grepl("GOAL", event_description) ~ "GOAL",
           TRUE ~ event_type
-          ),
+        ),
       event_team = ESPN_team_IDs_update$Team[match(team_ID_ESPN, ESPN_team_IDs_update$team_ID)],
       ## Account for ESPN's strange method of recording coordinates
       coords_x =
@@ -2662,15 +2105,15 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
           as.numeric(game_info_data$season) >= 20162017 ~ coords_x + 1,  ## ESPN adjusts other way as of 20162017
           game_info_data$season == "20092010" & coords_x > 99 ~ 99,      ## handful of coordinates greater than 99
           TRUE ~ coords_x
-          ),
+        ),
       coords_y =
         case_when(
           game_info_data$season %in% c("20072008", "20082009") ~ round((coords_y + 1.5) * (84 / 83), 1),  ## ESPN min/max was -43/40, center and expand to match NHL API scale
           as.numeric(game_info_data$season) >= 20162017 ~ coords_y - 1,  ## ESPN adjusts other way as of 20162017
           game_info_data$season == "20092010" & coords_y < -42 ~ -42,      ## handful of coordinates less than -42
           TRUE ~ coords_y
-          )
-      ) %>%
+        )
+    ) %>%
     filter(event_type %in% c("TAKE", "GIVE", "MISS", "HIT", "SHOT", "BLOCK", "GOAL", "PENL", "FAC")) %>%
     ## Determine if simultaneous events are present
     group_by(game_period, game_seconds, event_type, event_team) %>%
@@ -2691,7 +2134,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
       pbp_ESPN_events %>%
         filter(group_count == 1),  ## filter out concurrent events
       by = c("game_period", "game_seconds", "event_type", "event_team")
-      ) %>%
+    ) %>%
     filter(!is.na(group_count)) %>%
     select(-c(group_count)) %>%
     data.frame()
@@ -2712,7 +2155,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
       filter(
         group_count > 1,           ## only act on problem rows
         event_type != "PENL"       ## not adding coordinates for concurrent penalties
-        ) %>%
+      ) %>%
       dplyr::mutate(index = row_number()) %>%
       ## Extract the first event player
       dplyr::mutate(
@@ -2736,8 +2179,8 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
 
             event_type == "GOAL" & game_period == 5 & grepl("Shootout\\s*GOAL\\s*scored\\s*by\\s*", event_description) ~ gsub("Shootout\\s*GOAL\\s*scored\\s*by\\s*", "", event_description) %>% gsub("\\s*\\bon\\b\\s*.*", "", .),
             event_type == "GOAL" & game_period == 5 & grepl("shootout\\s*attempt\\s*against", event_description) ~       gsub("\\s*shootout\\s*attempt\\s*against.*", "", event_description)
-            )
-        ) %>%
+          )
+      ) %>%
       group_by(index) %>%
       dplyr::mutate(
         last_name =      toupper(strsplit(player_match, "\\s")[[1]][2]),
@@ -2746,7 +2189,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
           case_when(
             event_type != "FAC" ~ roster_data$player_team_num[match(paste0(event_team, last_name), paste0(roster_data$Team, roster_data$lastName))],
             event_type == "FAC" ~ roster_data$player_team_num[match(paste0(game_info_data$away_team, last_name), paste0(roster_data$Team, roster_data$lastName))]
-            ),
+          ),
         ## Attempt to address two-string last names
         name_length =    max(as.numeric(lapply(strsplit(player_match, "\\s"), length))),
         event_player_1 = ifelse(is.na(event_player_1) & name_length > 2,
@@ -2759,8 +2202,8 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
                                          gsub("\\s*", "", roster_data$lastName))
                                 )],
                                 event_player_1
-                                )
-        ) %>%
+        )
+      ) %>%
       select(-c(name_length)) %>%
       group_by(game_period, game_seconds, event_type, event_player_1) %>%
       dplyr::mutate(same_check = n()) %>%
@@ -2777,7 +2220,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
         left_join(
           pbp_ESPN_events_prob,
           by = c("game_period", "game_seconds", "event_type", "event_team", "event_player_1")
-          ) %>%
+        ) %>%
         filter(!is.na(group_count))
 
       ## Each event_player_1 is separate
@@ -2793,7 +2236,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
         dplyr::mutate(
           row =      row_number(),
           filtered = suppressWarnings(ifelse(row_number() == max(row) | row_number() == min(row), 1, 0))
-          ) %>%
+        ) %>%
         filter(filtered == 1) %>%
         ## Ensure new rows created from join are filtered out if something went wrong
         group_by(eventIdx) %>%
@@ -2811,7 +2254,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
         dplyr::mutate(
           row =      row_number(),
           filtered = suppressWarnings(ifelse(row_number() == max(row) | row_number() == min(row) | row_number() == min(row) + 4, 1, 0))
-          ) %>%
+        ) %>%
         filter(filtered == 1) %>%
         ## Ensure new rows created from join are filtered out if something went wrong
         group_by(eventIdx) %>%
@@ -2829,7 +2272,7 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
         dplyr::mutate(
           row =      row_number(),
           filtered = suppressWarnings(ifelse(row_number() == max(row) | row_number() == min(row) | row_number() == min(row) + 5 | row_number() == min(row) + 10, 1, 0))
-          ) %>%
+        ) %>%
         filter(filtered == 1) %>%
         ## Ensure new rows created from join are filtered out if something went wrong
         group_by(eventIdx) %>%
@@ -2848,10 +2291,10 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
         fix_df_ESPN_2,
         fix_df_ESPN_3,
         fix_df_ESPN_4
-        ) %>%
+      ) %>%
         arrange(eventIdx)
 
-      }
+    }
 
 
     ## Join to data not effected by concurrent event issues
@@ -2859,17 +2302,17 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
       combine_events_reconcile <- bind_rows(
         combine_events_okay,
         combine_events_prob
-        ) %>%
+      ) %>%
         arrange(eventIdx) %>%
         data.frame()
 
-      }
+    }
     else {
       combine_events_reconcile <- combine_events_okay
 
-      }
-
     }
+
+  }
 
 
 
@@ -2881,10 +2324,10 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
   if (nrow(filter(pbp_ESPN_events, group_count > 1, event_type != "PENL")) == 0) {
     combine_events_final <- combine_events_okay
 
-    } else {
-      combine_events_final <- combine_events_reconcile
+  } else {
+    combine_events_final <- combine_events_reconcile
 
-      }
+  }
 
 
   ## Final Join
@@ -2894,9 +2337,9 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
         select(
           eventIdx, game_period, game_seconds, event_type, coords_x, coords_y, event_team,
           event_description_alt = event_description
-          ),
+        ),
       by = c("eventIdx", "game_period", "game_seconds", "event_type", "event_team")
-      ) %>%
+    ) %>%
     data.frame()
 
 
@@ -2910,17 +2353,17 @@ sc.join_coordinates_ESPN <- function(season_id_fun, events_data_ESPN, events_dat
           select(
             eventIdx, game_period, game_seconds, event_type, coords_x, coords_y, event_team,
             event_description_alt = event_description
-            ),
+          ),
         by = c("eventIdx", "game_period", "game_seconds", "event_type", "event_team")
-        ) %>%
+      ) %>%
       data.frame()
 
-    }
+  }
 
 
   return(pbp_events_full)
 
-  }
+}
 
 
 ## -------------------- ##
@@ -2934,14 +2377,14 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
   pbp_df <- bind_rows(
     events_data,
     shifts_data
-    ) %>%
+  ) %>%
     dplyr::mutate(
       season =    game_info_data$season,
       game_date = game_info_data$game_date,
       session =   game_info_data$session,
       home_team = game_info_data$home_team,
       away_team = game_info_data$away_team
-      ) %>%
+    ) %>%
     dplyr::mutate(
       priority =
         1 * (event_type %in% c("TAKE", "GIVE", "MISS", "HIT", "SHOT", "BLOCK") & !(game_period == 5 & session == "R")) +
@@ -2953,12 +2396,12 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
         7 * (event_type == "PEND" & !(game_period == 5 & session == "R")) +
         8 * (event_type == "GEND" & !(game_period == 5 & session == "R")) +
         9 * (event_type == "FAC" &  !(game_period == 5 & session == "R"))
-      ) %>%
+    ) %>%
     arrange(
       game_period,
       game_seconds,
       priority
-      ) %>%
+    ) %>%
     dplyr::mutate(event_index = as.numeric(cumsum(!is.na(game_id)))) %>%
     select(-priority) %>%
     data.frame()
@@ -2973,9 +2416,9 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
         1 * (grepl(paste0("\\b", roster_data$player_team_num[i], "\\b"), pbp_df$players_off) &  ## "\\b" forces exact match
                pbp_df$event_type == "CHANGE" &
                pbp_df$event_team == pbp_df$home_team)
-      )
+    )
 
-    }
+  }
 
 
   is_on_matrix_away <- foreach(i = 1:length(roster_data$player_team_num), .combine = cbind) %do% {
@@ -2987,9 +2430,9 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
         1 * (grepl(paste0("\\b", roster_data$player_team_num[i], "\\b"), pbp_df$players_off) &  ## "\\b" forces exact match
                pbp_df$event_type == "CHANGE" &
                pbp_df$event_team == pbp_df$away_team)
-      )
+    )
 
-    }
+  }
 
   ## Set column names of matrices
   colnames(is_on_matrix_home) <- roster_data$player
@@ -3000,7 +2443,7 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
   is_on_df_home <- which(
     is_on_matrix_home == 1,
     arr.ind = TRUE
-    ) %>%
+  ) %>%
     data.frame() %>%
     group_by(row) %>%
     summarise(
@@ -3011,13 +2454,13 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
       home_on_5 = colnames(is_on_matrix_home)[unique(col)[5]],
       home_on_6 = colnames(is_on_matrix_home)[unique(col)[6]],
       home_on_7 = colnames(is_on_matrix_home)[unique(col)[7]]
-      ) %>%
+    ) %>%
     data.frame()
 
   is_on_df_away <- which(
     is_on_matrix_away == 1,
     arr.ind = TRUE
-    ) %>%
+  ) %>%
     data.frame() %>%
     group_by(row) %>%
     summarise(
@@ -3028,7 +2471,7 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
       away_on_5 = colnames(is_on_matrix_away)[unique(col)[5]],
       away_on_6 = colnames(is_on_matrix_away)[unique(col)[6]],
       away_on_7 = colnames(is_on_matrix_away)[unique(col)[7]]
-      ) %>%
+    ) %>%
     data.frame()
 
 
@@ -3036,7 +2479,7 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
   goalie_vec <- c(
     as.character(filter(roster_data, position_type == "G", Team == game_info_data$home_team)$player),
     as.character(filter(roster_data, position_type == "G", Team == game_info_data$away_team)$player)
-    )
+  )
 
   ## Add home goalies
   is_on_df_home_return <- is_on_df_home %>%
@@ -3050,8 +2493,8 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
           home_on_5 %in% goalie_vec ~ home_on_5,
           home_on_6 %in% goalie_vec ~ home_on_6,
           home_on_7 %in% goalie_vec ~ home_on_7
-          )
-      ) %>%
+        )
+    ) %>%
     rename(event_index = row) %>%  ## row determined above in matrix construction, renamed for joining
     data.frame()
 
@@ -3067,8 +2510,8 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
           away_on_5 %in% goalie_vec ~ away_on_5,
           away_on_6 %in% goalie_vec ~ away_on_6,
           away_on_7 %in% goalie_vec ~ away_on_7
-          )
-      ) %>%
+        )
+    ) %>%
     rename(event_index = row) %>%  ## row determined above in matrix construction, renamed for joining
     data.frame()
 
@@ -3078,9 +2521,9 @@ sc.pbp_combine <- function(events_data, shifts_data, roster_data, game_info_data
     pbp_final =     pbp_df,
     is_on_df_home = is_on_df_home_return,
     is_on_df_away = is_on_df_away_return
-    )
+  )
 
-  }
+}
 
 ## Finalize PBP Data
 sc.pbp_finalize <- function(pbp_data, on_data_home, on_data_away, roster_data, game_info_data, live_scrape) {
@@ -3111,12 +2554,12 @@ sc.pbp_finalize <- function(pbp_data, on_data_home, on_data_away, roster_data, g
       away_on_1 =    ifelse(game_period == 5 & game_info_data$session == "R" & event_team == away_team, event_player_1, away_on_1),
       home_on_2 =    ifelse(game_period == 5 & game_info_data$session == "R", home_goalie, home_on_2),
       away_on_2 =    ifelse(game_period == 5 & game_info_data$session == "R", away_goalie, away_on_2)
-      ) %>%
+    ) %>%
     ## Fix skaters for penalty shots
     mutate_at(
       vars(home_on_1:home_on_7, away_on_1:away_on_7),
       funs(ifelse(grepl("penalty shot", tolower(event_description)) & . != event_player_1 & . != home_goalie & . != away_goalie, NA, .))
-      ) %>%
+    ) %>%
     dplyr::mutate(
       home_skaters = 7 -
         1 * (is.na(home_on_1)) - 1 * (is.na(home_on_2)) - 1 * (is.na(home_on_3)) -
@@ -3131,7 +2574,7 @@ sc.pbp_finalize <- function(pbp_data, on_data_home, on_data_away, roster_data, g
       ## Determine event length and check potential issues
       event_length = lead(game_seconds, 1) - game_seconds,
       event_length = ifelse(is.na(event_length) | event_length < 0, 0, event_length)
-      ) %>%
+    ) %>%
     group_by(event_index) %>%
     ## Goalie change indication
     dplyr::mutate(
@@ -3145,14 +2588,14 @@ sc.pbp_finalize <- function(pbp_data, on_data_home, on_data_away, roster_data, g
                                NA),
       home_g_change =   roster_data$player[match(home_g_change, roster_data$player_team_num)],
       away_g_change =   roster_data$player[match(away_g_change, roster_data$player_team_num)]
-      ) %>%
+    ) %>%
     group_by(game_id) %>%
     dplyr::mutate(
       game_strength_state = paste(
         ifelse(is.na(home_goalie), "E", home_skaters),
         ifelse(is.na(away_goalie), "E", away_skaters),
         sep = "v"
-        ),
+      ),
       game_strength_state = ifelse((home_skaters == 6 & !is.na(home_goalie)) | (away_skaters == 6 & !is.na(away_goalie)), "illegal", game_strength_state), ## Determine if strength state is illegal
       game_score_state =    paste(home_score, away_score, sep = "v"),
       ## Alternate strength state calculation (disregards goalies)
@@ -3163,7 +2606,7 @@ sc.pbp_finalize <- function(pbp_data, on_data_home, on_data_away, roster_data, g
         1 * (away_on_1 %in% skater_vec_away) + 1 * (away_on_2 %in% skater_vec_away) + 1 * (away_on_3 %in% skater_vec_away) +
         1 * (away_on_4 %in% skater_vec_away) + 1 * (away_on_5 %in% skater_vec_away) + 1 * (away_on_6 %in% skater_vec_away) + 1 * (away_on_7 %in% skater_vec_away),
       game_strength_state_alt = gsub("6|7", "E", paste0(home_skaters_alt, "v", away_skaters_alt))
-      ) %>%
+    ) %>%
     select(
       ## Main selections
       season, game_id, game_date, session, event_index, game_period, game_seconds, event_type,
@@ -3174,7 +2617,7 @@ sc.pbp_finalize <- function(pbp_data, on_data_home, on_data_away, roster_data, g
       home_skaters_alt, away_skaters_alt, game_strength_state_alt,
       home_g_change, away_g_change,
       event_description_alt
-      ) %>%
+    ) %>%
     arrange(game_id, event_index) %>%
     data.frame()
 
@@ -3184,7 +2627,7 @@ sc.pbp_finalize <- function(pbp_data, on_data_home, on_data_away, roster_data, g
     pbp_combined <- pbp_combined %>%
       dplyr::mutate(game_strength_state = game_strength_state_alt)
 
-    }
+  }
 
 
   ## Split into base and extra data to return
@@ -3199,9 +2642,10 @@ sc.pbp_finalize <- function(pbp_data, on_data_home, on_data_away, roster_data, g
   return_list <- list(
     pbp_base =   pbp_base,
     pbp_extras = pbp_extras
-    )
+  )
 
-  }
+}
+
 
 
 ## --------------------- ##
@@ -3220,23 +2664,23 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
     game_id_fun = game_id,
     season_id_fun = season_id,
     attempts = 3
-    )
+  )
 
   ## Scrape shifts - HTM
   shifts_data_scrape <- sc.scrape_shifts(
     game_id_fun = game_id,
     season_id_fun = season_id,
     attempts = 3
-    )
+  )
 
   ## Scrape events - API
   if (scrape_type_ == "full") {
     events_API <- sc.scrape_events_API(
       game_id_fun = game_id,
       attempts = 3
-      )
+    )
 
-    }
+  }
 
   ## Scrape rosters
   rosters_HTM <- sc.scrape_rosters(game_id_fun = game_id, season_id_fun = season_id, attempts = 3)
@@ -3247,9 +2691,9 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       game_id_fun = game_id,
       season_id_fun = season_id,
       attempts = 3
-      )
+    )
 
-    }
+  }
 
 
   ## ---------------------------- ##
@@ -3262,7 +2706,7 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
     season_id_fun = season_id,
     events_data = events_HTM,
     roster_data = rosters_HTM
-    )
+  )
 
 
   ## Scrape API for shifts data if HTM source fails
@@ -3270,14 +2714,14 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
     shifts_data_scrape <- sc.shifts_process_API(
       game_id_fun = game_id,
       game_info_data = game_info_df
-      )
+    )
 
     HTM_shifts_okay <- FALSE
 
-    } else {
-      HTM_shifts_okay <- TRUE
+  } else {
+    HTM_shifts_okay <- TRUE
 
-      }
+  }
 
 
   ## Create rosters data frame
@@ -3287,7 +2731,7 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
     roster_data = rosters_HTM,
     game_info_data = game_info_df,
     shifts_list = shifts_data_scrape
-    )
+  )
 
   ## Create event summary data frame
   if (scrape_type_ %in% c("full", "event_summary")) {
@@ -3297,9 +2741,9 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       event_summary_data = event_summary_HTM,
       roster_data = rosters_list$roster_df,
       game_info_data = game_info_df
-      )
+    )
 
-    }
+  }
 
   if (scrape_type_ == "full") {
 
@@ -3313,7 +2757,7 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       season_id_fun = season_id,
       events_data = events_HTM,
       game_info_data = game_info_df
-      )
+    )
 
     ## Prepare Events Data (API)
     if (!is.null(events_API$liveData$plays$allPlays$coordinates)) {
@@ -3323,19 +2767,19 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
           game_id_fun = game_id,
           events_data_API = events_API,
           game_info_data = game_info_df
-          )
+        )
 
         coord_type <- "NHL_API"
-
-        } else {
-          prepare_events_API_df <- NULL
-
-          }
 
       } else {
         prepare_events_API_df <- NULL
 
-        }
+      }
+
+    } else {
+      prepare_events_API_df <- NULL
+
+    }
 
 
     ## ----------------------- ##
@@ -3351,17 +2795,17 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
         roster_data = rosters_list$roster_df,
         game_info_data = game_info_df,
         fix_shifts = isFALSE(live_scrape_)  ## flip live_scrape input
-        )
+      )
 
-      } else {
-        shifts_parsed_list <- sc.shifts_parse_API(
-          game_id_fun = game_id,
-          shifts_list = shifts_data_scrape,
-          roster_data = rosters_list$roster_df,
-          game_info_data = game_info_df
-          )
+    } else {
+      shifts_parsed_list <- sc.shifts_parse_API(
+        game_id_fun = game_id,
+        shifts_list = shifts_data_scrape,
+        roster_data = rosters_list$roster_df,
+        game_info_data = game_info_df
+      )
 
-        }
+    }
 
 
     ## Fix Goalie Shifts & Finalize
@@ -3371,12 +2815,12 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       events_data_HTM = prepare_events_HTM_df,
       game_info_data = game_info_df,
       fix_shifts = isFALSE(live_scrape_)  ## flip live_scrape input
-      )
+    )
 
     ## Create ON/OFF Event Types
     shifts_event_types_df <- sc.shifts_create_events(
       shifts_final_data = shifts_final_df
-      )
+    )
 
 
     ## -------------------- ##
@@ -3387,54 +2831,54 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       events_full_df <- sc.join_coordinates_API(
         events_data_API = prepare_events_API_df,
         events_data_HTM = prepare_events_HTM_df
-        )
+      )
 
-      } else {                              ## ESPN XML SOURCE
-        prepare_events_ESPN_df <- sc.scrape_events_ESPN(
-          game_id_fun = game_id,
-          season_id_fun = season_id,
-          game_info_data = game_info_df,
-          attempts = 3
+    } else {                              ## ESPN XML SOURCE
+      prepare_events_ESPN_df <- sc.scrape_events_ESPN(
+        game_id_fun = game_id,
+        season_id_fun = season_id,
+        game_info_data = game_info_df,
+        attempts = 3
+      )
+
+      if (class(prepare_events_ESPN_df) == "data.frame") {
+
+        if (nrow(prepare_events_ESPN_df) > 0) {
+          events_full_df <- sc.join_coordinates_ESPN(
+            season_id_fun = season_id,
+            events_data_ESPN = prepare_events_ESPN_df,
+            events_data_HTM = prepare_events_HTM_df,
+            roster_data = rosters_list$roster_df,
+            game_info_data = game_info_df
           )
 
-        if (class(prepare_events_ESPN_df) == "data.frame") {
+          coord_type <- "ESPN"
 
-          if (nrow(prepare_events_ESPN_df) > 0) {
-            events_full_df <- sc.join_coordinates_ESPN(
-              season_id_fun = season_id,
-              events_data_ESPN = prepare_events_ESPN_df,
-              events_data_HTM = prepare_events_HTM_df,
-              roster_data = rosters_list$roster_df,
-              game_info_data = game_info_df
-              )
+        } else {  ## COORDINATES NOT AVAILABLE
+          events_full_df <- prepare_events_HTM_df %>%
+            dplyr::mutate(
+              coords_x = NA,
+              coords_y = NA,
+              event_description_alt = NA
+            )
 
-            coord_type <- "ESPN"
-
-            } else {  ## COORDINATES NOT AVAILABLE
-              events_full_df <- prepare_events_HTM_df %>%
-                dplyr::mutate(
-                  coords_x = NA,
-                  coords_y = NA,
-                  event_description_alt = NA
-                  )
-
-              coord_type <- "NO_COORDS"
-
-              }
-
-          } else {    ## COORDINATES NOT AVAILABLE
-            events_full_df <- prepare_events_HTM_df %>%
-              dplyr::mutate(
-                coords_x = NA,
-                coords_y = NA,
-                event_description_alt = NA
-                )
-
-            coord_type <- "NO_COORDS"
-
-            }
+          coord_type <- "NO_COORDS"
 
         }
+
+      } else {    ## COORDINATES NOT AVAILABLE
+        events_full_df <- prepare_events_HTM_df %>%
+          dplyr::mutate(
+            coords_x = NA,
+            coords_y = NA,
+            event_description_alt = NA
+          )
+
+        coord_type <- "NO_COORDS"
+
+      }
+
+    }
 
 
     ## -------------------- ##
@@ -3447,7 +2891,7 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       shifts_data = shifts_event_types_df,
       roster_data = rosters_list$roster_df,
       game_info_data = game_info_df
-      )
+    )
 
     ## Finalize PBP Data
     pbp_finalize_list <- sc.pbp_finalize(
@@ -3457,7 +2901,7 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       roster_data =    rosters_list$roster_df,
       game_info_data = game_info_df,
       live_scrape = live_scrape_
-      )
+    )
 
     ## Modify game_info_df to return
     game_info_df_return <- game_info_df %>%
@@ -3470,8 +2914,8 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
             period_count == 4 & session == "R" ~ "OT",
             period_count <= 5 & session == "R" ~ "SO",
             period_count >= 4 & session == "P" ~ "OT"
-            )
-        ) %>%
+          )
+      ) %>%
       select(game_id:away_score, game_end, home_coach:linesman_2, coord_source) %>%
       data.frame()
 
@@ -3497,9 +2941,9 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       scratches_df =     rosters_list$scratches_df,
       game_info_df =     game_info_df_return,
       event_summary_df = event_summary_df
-      )
+    )
 
-    }
+  }
 
   ## Return data is not full scrape
   if (scrape_type_ == "event_summary") {
@@ -3514,27 +2958,27 @@ sc.scrape_game <- function(game_id, season_id, scrape_type_, live_scrape_) {
       roster_df =        rosters_list$roster_df_final,
       scratches_df =     rosters_list$scratches_df,
       event_summary_df = event_summary_df
-      )
+    )
 
-    } else if (scrape_type_ == "rosters") {
+  } else if (scrape_type_ == "rosters") {
 
-      ## Ensure database friendly column names
-      colnames(rosters_list$roster_df_final) <- tolower(colnames(rosters_list$roster_df_final))
-      colnames(rosters_list$scratches_df) <-    tolower(colnames(rosters_list$scratches_df))
+    ## Ensure database friendly column names
+    colnames(rosters_list$roster_df_final) <- tolower(colnames(rosters_list$roster_df_final))
+    colnames(rosters_list$scratches_df) <-    tolower(colnames(rosters_list$scratches_df))
 
-      ## Return as list
-      return_list <- list(
-        roster_df =    rosters_list$roster_df_final,
-        scratches_df = rosters_list$scratches_df
-        )
+    ## Return as list
+    return_list <- list(
+      roster_df =    rosters_list$roster_df_final,
+      scratches_df = rosters_list$scratches_df
+    )
 
-      }
+  }
 
 
   ## Return data
   return(return_list)
 
-  }
+}
 
 ## Run sc.scrape_game function in loop for multiple games
 sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verbose = TRUE, sleep = 0) {
@@ -3556,10 +3000,10 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
 
     message(paste0("Unable to scrape game(s) ", games[games %in% dead_games], " due to NHL source deficiencies", "\n"))
 
-    } else {
-      dead_games_removed <- 0
+  } else {
+    dead_games_removed <- 0
 
-      }
+  }
 
 
   ## Find unique games and sort
@@ -3577,23 +3021,23 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
       "full" =          cat(" // Full Scrape"),
       "event_summary" = cat(" // Event Summary and Rosters"),
       "rosters" =       cat(" // Rosters Only")
-      )
+    )
 
     cat(paste0("\n", "-------------", "\n"))
 
-    } else {
-      cat(paste0("Processing Game... "))
+  } else {
+    cat(paste0("Processing Game... "))
 
-      switch (
-        scrape_type,
-        "full" =          cat(" // Full Scrape"),
-        "event_summary" = cat(" // Event Summary and Rosters"),
-        "rosters" =       cat(" // Rosters Only")
-        )
+    switch (
+      scrape_type,
+      "full" =          cat(" // Full Scrape"),
+      "event_summary" = cat(" // Event Summary and Rosters"),
+      "rosters" =       cat(" // Rosters Only")
+    )
 
-      cat(paste0("\n", "-------------", "\n"))
+    cat(paste0("\n", "-------------", "\n"))
 
-      }
+  }
 
   if (length(games) != length(games_vec) & dead_games_removed != 1) message("Duplicate game IDs provided - combined for processing", "\n")
 
@@ -3620,7 +3064,7 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
         season_id =   paste0(as.numeric(substr(games_vec[i], 1, 4)), as.numeric(substr(games_vec[i], 1, 4)) + 1),
         scrape_type_ = scrape_type,
         live_scrape_ = live_scrape
-        )
+      )
 
       if (scrape_type == "full") {
         hold_pbp_base <-       pbp_list$pbp_base
@@ -3628,11 +3072,11 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
         hold_player_shifts <-  pbp_list$player_shifts
         hold_player_periods <- pbp_list$player_periods
         hold_game_info_df <-   pbp_list$game_info_df
-        }
+      }
 
       if (scrape_type %in% c("event_summary", "full")) {
         hold_event_summary_df <- pbp_list$event_summary_df
-        }
+      }
 
       hold_roster_df <-    pbp_list$roster_df
       hold_scratches_df <- pbp_list$scratches_df
@@ -3647,37 +3091,37 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
           new_player_shifts <-  pbp_list$player_shifts
           new_player_periods <- pbp_list$player_periods
           new_game_info_df <-   pbp_list$game_info_df
-          }
+        }
 
         if (scrape_type %in% c("event_summary", "full")) {
           new_event_summary_df <- pbp_list$event_summary_df
-          }
+        }
 
         new_roster_df <-    pbp_list$roster_df
         new_scratches_df <- pbp_list$scratches_df
 
-        } else if (i > 1) {
+      } else if (i > 1) {
 
-          if (scrape_type == "full") {
-            new_pbp_base <-       bind_rows(hold_pbp_base, new_pbp_base)
-            new_pbp_extras <-     bind_rows(hold_pbp_extras, new_pbp_extras)
-            new_player_shifts <-  bind_rows(hold_player_shifts, new_player_shifts)
-            new_player_periods <- bind_rows(hold_player_periods, new_player_periods)
-            new_game_info_df <-   bind_rows(hold_game_info_df, new_game_info_df)
-            }
+        if (scrape_type == "full") {
+          new_pbp_base <-       bind_rows(hold_pbp_base, new_pbp_base)
+          new_pbp_extras <-     bind_rows(hold_pbp_extras, new_pbp_extras)
+          new_player_shifts <-  bind_rows(hold_player_shifts, new_player_shifts)
+          new_player_periods <- bind_rows(hold_player_periods, new_player_periods)
+          new_game_info_df <-   bind_rows(hold_game_info_df, new_game_info_df)
+        }
 
-          if (scrape_type %in% c("event_summary", "full")) {
-            new_event_summary_df <- bind_rows(hold_event_summary_df, new_event_summary_df)
-            }
+        if (scrape_type %in% c("event_summary", "full")) {
+          new_event_summary_df <- bind_rows(hold_event_summary_df, new_event_summary_df)
+        }
 
-          new_roster_df <-    bind_rows(hold_roster_df, new_roster_df)
-          new_scratches_df <- bind_rows(hold_scratches_df, new_scratches_df)
+        new_roster_df <-    bind_rows(hold_roster_df, new_roster_df)
+        new_scratches_df <- bind_rows(hold_scratches_df, new_scratches_df)
 
-          }
+      }
 
-      },
-      error = function(e) cat("ERROR :", conditionMessage(e), "... ")
-      )
+    },
+    error = function(e) cat("ERROR :", conditionMessage(e), "... ")
+    )
 
     ## Scrape report data frame
     if (exists("hold_roster_df")) {
@@ -3694,19 +3138,19 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
         scrape_report_df[i, 9] <-  na_if_null(nrow(pbp_list$game_info_df))
         scrape_report_df[i, 10] <- as.numeric(round(Sys.time() - start_time, 2))
 
-        } else {
-          scrape_report_df[i, 1] <-       games_vec[i]
-          scrape_report_df[i, c(2, 9)] <- NA
-          scrape_report_df[i, 10] <-      as.numeric(round(Sys.time() - start_time, 2))
-
-          }
-
       } else {
         scrape_report_df[i, 1] <-       games_vec[i]
         scrape_report_df[i, c(2, 9)] <- NA
-        scrape_report_df[i, 10] <-      as.numeric(round(Sys.time() - start_time, 1))
+        scrape_report_df[i, 10] <-      as.numeric(round(Sys.time() - start_time, 2))
 
-        }
+      }
+
+    } else {
+      scrape_report_df[i, 1] <-       games_vec[i]
+      scrape_report_df[i, c(2, 9)] <- NA
+      scrape_report_df[i, 10] <-      as.numeric(round(Sys.time() - start_time, 1))
+
+    }
 
     ## Print times if verbose
     if (verbose == TRUE) cat(paste0(round(scrape_report_df[i, 10], 1), " sec"), "\n") else cat("\n")
@@ -3714,9 +3158,9 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
     ## Garbage collect every 200 games
     if (isTRUE(all.equal(i / 200, as.integer(i / 200), check.attributes = FALSE))) {
       invisible(gc())
-      }
-
     }
+
+  }
 
 
   ## Add Names
@@ -3729,8 +3173,8 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
         length(unique(new_roster_df$game_id)), " of ", length(games_vec),
         " games returned // Avg Time Per Game: ",
         round(mean(scrape_report_df$time_elapsed), 1), "\n"
-        )
       )
+  )
 
 
   ## Return List
@@ -3745,689 +3189,28 @@ sc.scrape_pbp <- function(games, scrape_type = "full", live_scrape = FALSE, verb
       scratches_df =      new_scratches_df %>% arrange(game_id),
       events_summary_df = new_event_summary_df %>% arrange(game_id),
       report =            scrape_report_df %>% arrange(game_id)
-      )
+    )
 
-    } else if (scrape_type == "event_summary") {
-      return_list <- list(
-        roster_df =         new_roster_df %>% arrange(game_id),
-        scratches_df =      new_scratches_df %>% arrange(game_id),
-        events_summary_df = new_event_summary_df %>% arrange(game_id),
-        report =            scrape_report_df %>% arrange(game_id)
-        )
+  } else if (scrape_type == "event_summary") {
+    return_list <- list(
+      roster_df =         new_roster_df %>% arrange(game_id),
+      scratches_df =      new_scratches_df %>% arrange(game_id),
+      events_summary_df = new_event_summary_df %>% arrange(game_id),
+      report =            scrape_report_df %>% arrange(game_id)
+    )
 
-      } else {
-        return_list <- list(
-          roster_df =    new_roster_df %>% arrange(game_id),
-          scratches_df = new_scratches_df %>% arrange(game_id),
-          report =       scrape_report_df %>% arrange(game_id)
-          )
+  } else {
+    return_list <- list(
+      roster_df =    new_roster_df %>% arrange(game_id),
+      scratches_df = new_scratches_df %>% arrange(game_id),
+      report =       scrape_report_df %>% arrange(game_id)
+    )
 
-        }
+  }
 
   ## Return data
   return(return_list)
 
-  }
-
-
-
-## ------------------------------------------ ##
-
-
-
-## ----------------------------- ##
-##   Additional Data Functions   ##
-## ----------------------------- ##
-
-## Fix Player Names - API
-sc.update_names_API <- function(data, col_name) {
-
-  ## Handle input column name
-  hold_name <- as.name(col_name)
-
-  data <- data %>%
-    dplyr::mutate(player_name = !!hold_name)
-
-
-  ## Find and modify incorrect player names
-  fixed_names_df <- data %>%
-    dplyr::mutate(
-      player_name =
-        ## Global name changes
-        case_when(
-          grepl("^ALEXANDER.|^ALEXANDRE.", player_name) ~ gsub("^ALEXANDER.|^ALEXANDRE.", "ALEX.", player_name),
-          grepl("^CHRISTOPHER.", player_name) ~ gsub("^CHRISTOPHER.", "CHRIS.", player_name),
-          TRUE ~ player_name
-          ),
-      player_name =
-        ## Specific name changes
-        case_when(
-          player_name == "ALEX.PECHURSKIY" ~ "ALEX.PECHURSKI",
-          player_name == "BEN.ONDRUS" ~ "BENJAMIN.ONDRUS",
-          player_name == "BRYCE.VAN.BRABANT" ~ "BRYCE.VAN BRABANT",
-          player_name == "CALVIN.DE.HAAN" ~ "CALVIN.DE HAAN",
-          player_name == "CHASE.DE.LEO" ~ "CHASE.DE LEO",
-          player_name == "CAL.PETERSEN" ~ "CALVIN.PETERSEN",
-          player_name == "DANIEL.CARCILLO" ~ "DAN.CARCILLO",
-          player_name == "DANNY.O'REGAN" ~ "DANIEL.O'REGAN",
-          player_name == "DAVID.VAN.DER.GULIK" ~ "DAVID.VAN DER GULIK",
-          player_name == "EVGENII.DADONOV" ~ "EVGENY.DADONOV",
-          player_name == "FREDDY.MODIN" ~ "FREDRIK.MODIN",
-          player_name == "GREG.DE.VRIES" ~ "GREG.DE VRIES",
-          player_name == "ILYA.ZUBOV" ~ "ILJA.ZUBOV",
-          player_name == "JACOB.DE.LA.ROSE" ~ "JACOB.DE LA ROSE",
-          player_name == "JAMES.VAN.RIEMSDYK" ~ "JAMES.VAN RIEMSDYK",
-          player_name == "JEAN-FRANCOIS.JACQUES" ~ "J-F.JACQUES",
-          player_name == "JAKOB.FORSBACKA.KARLSSON" ~ "JAKOB.FORSBACKA KARLSSON",
-          player_name == "JIM.DOWD" ~ "JAMES.DOWD",
-          player_name == "JEFF.HAMILTON" ~ "JEFFREY.HAMILTON",
-          player_name == "JEFF.PENNER" ~ "JEFFREY.PENNER",
-          player_name == "JOEL.ERIKSSON.EK" ~ "JOEL.ERIKSSON EK",
-          player_name == "MARK.VAN.GUILDER" ~ "MARK.VAN GUILDER",
-          player_name == "MARTIN.ST..LOUIS" ~ "MARTIN.ST. LOUIS",
-          player_name == "MARTIN.ST.PIERRE" ~ "MARTIN.ST. PIERRE",
-          player_name == "MARTIN.ST PIERRE" ~ "MARTIN.ST. PIERRE",
-          player_name == "MICHAEL.CAMMALLERI" ~ "MIKE.CAMMALLERI",
-          player_name == "MICHAEL.DAL.COLLE" ~ "MICHAEL.DAL COLLE",
-          player_name == "MICHAEL.DEL.ZOTTO" ~ "MICHAEL.DEL ZOTTO",
-          player_name == "MIKE.VERNACE" ~ "MICHAEL.VERNACE",
-          player_name == "MIKE.YORK" ~ "MICHAEL.YORK",
-          player_name == "MIKE.VAN.RYN" ~ "MIKE.VAN RYN",
-          player_name == "MITCHELL.MARNER" ~ "MITCH.MARNER",
-          player_name == "PAT.MAROON" ~ "PATRICK.MAROON",
-          player_name == "PA.PARENTEAU" ~ "P.A..PARENTEAU",
-          player_name == "PHILLIP.DI.GIUSEPPE" ~ "PHILLIP.DI GIUSEPPE",
-          player_name == "STEFAN.DELLA.ROVERE" ~ "STEFAN.DELLA ROVERE",
-          player_name == "STEPHANE.DA.COSTA" ~ "STEPHANE.DA COSTA",
-          player_name == "TJ.GALIARDI" ~ "T.J..GALIARDI",
-          player_name == "TOBY.ENSTROM" ~ "TOBIAS.ENSTROM",
-          player_name == "TREVOR.VAN.RIEMSDYK" ~ "TREVOR.VAN RIEMSDYK",
-          player_name == "ZACK.FITZGERALD" ~ "ZACH.FITZGERALD",
-
-          ## New changes
-          player_name == "TIM.GETTINGER" ~ "TIMOTHY.GETTINGER",
-
-          ## Duplicate player names
-          player_name == "SEBASTIAN.AHO" & birthday == "1996-02-17" ~ "SEBASTIAN.AHO2",     ## D, ID 8480222
-          player_name == "ALEX.PICARD" & birthday == "1985-10-09" ~ "ALEX.PICARD2",         ## L, ID 8471221
-          player_name == "SEAN.COLLINS" & birthday == "1988-12-29" ~ "SEAN.COLLINS2",       ## C, ID 8474744
-          player_name == "COLIN.WHITE" & birthday == "1997-01-30" ~ "COLIN.WHITE2",         ## C, ID 8478400
-          player_name == "ERIK.GUSTAFSSON" & birthday == "1992-03-14" ~ "ERIK.GUSTAFSSON2", ## D, ID 8476979 (CHI player)
-
-          TRUE ~ player_name
-          )
-      ) %>%
-    data.frame()
-
-
-  ## Replace original column with newly created column
-  fixed_names_df[[col_name]] <- fixed_names_df$player_name
-
-  ## Return data
-  return(
-    fixed_names_df %>%
-      select(-player_name)
-    )
-
-  }
-
-## Scrape & Process NHL Player Info (API)
-sc.player_info_API <- function(season_id_fun) {
-
-  ## --------------- ##
-  ##   Skater Data   ##
-  ## --------------- ##
-
-  ## Regular Season
-  NHL_data_R <- jsonlite::fromJSON(
-    paste0(
-      "http://www.nhl.com/stats/rest/skaters?isAggregate=false&reportType=basic&isGame=false&reportName=bios&cayenneExp=gameTypeId=2%20and%20seasonId%3E=",
-      season_id_fun,
-      "%20and%20seasonId%3C=",
-      season_id_fun
-      )
-    )
-
-  ## Playoffs
-  NHL_data_P <- jsonlite::fromJSON(
-    paste0(
-      "http://www.nhl.com/stats/rest/skaters?isAggregate=false&reportType=basic&isGame=false&reportName=bios&cayenneExp=gameTypeId=3%20and%20seasonId%3E=",
-      season_id_fun,
-      "%20and%20seasonId%3C=",
-      season_id_fun
-      )
-    )
-
-  ## Bind
-  NHL_data <- bind_rows(
-    NHL_data_R$data,
-    NHL_data_P$data
-    ) %>%
-    group_by(
-      playerBirthCity, playerBirthCountry, playerBirthDate, playerBirthStateProvince,
-      playerDraftOverallPickNo, playerDraftRoundNo, playerDraftYear, playerFirstName,
-      playerHeight, playerWeight, playerId, playerLastName, playerName, playerNationality,
-      playerPositionCode, playerShootsCatches, seasonId
-      ) %>%
-    summarise() %>%
-    data.frame()
-
-
-  ## Process skater data per season
-  NHL_skater_data <- NHL_data %>%
-    dplyr::mutate(
-      player =     toupper(playerName),
-      player =     gsub(" ", ".", player),
-      birthday =   as.Date(playerBirthDate),
-      # season_age = as.numeric(floor((as.Date(paste0(substr(seasonId, 5, 8), "-2-15"), "%Y-%m-%d") - birthday) / 365.25)),
-      season_age = as.numeric(floor((as.Date(paste0(substr(seasonId, 1, 4), "-9-15"), "%Y-%m-%d") - birthday) / 365.25)),    ## age in line with CBA definition
-      seasonId =   as.character(seasonId)#,
-      #playerTeamsPlayedFor = ifelse(grepl(", ", playerTeamsPlayedFor), gsub(", ", "/", playerTeamsPlayedFor), playerTeamsPlayedFor)
-      ) %>%
-    rename(season = seasonId) %>%
-    ungroup() %>%
-    rename_at(
-      vars(
-        playerPositionCode, playerShootsCatches, playerBirthCity, playerBirthCountry, # playerTeamsPlayedFor,
-        playerDraftOverallPickNo, playerDraftRoundNo, playerDraftYear, playerHeight, playerWeight
-        ),
-      funs(gsub("player", "", .))
-      ) %>%
-    dplyr::mutate(
-      position_type = ifelse(PositionCode == "D", "D", "F"),
-      current_age =   floor((Sys.Date() - birthday) / 365.25)
-      ) %>%
-    select(
-      player, NHL_ID = playerId, position = PositionCode, position_type, ShootsCatches, birthday, # TeamsPlayedFor,
-      BirthCity, BirthCountry, DraftOverallPickNo, DraftRoundNo,
-      DraftYear, Height, Weight,
-      season, season_age, current_age
-      ) %>%
-    data.frame()
-
-
-  ## --------------- ##
-  ##   Goalie Data   ##
-  ## --------------- ##
-
-  ## Regular Season
-  NHL_goalie_data_R <- jsonlite::fromJSON(
-    paste0(
-      "http://www.nhl.com/stats/rest/goalies?isAggregate=false&reportType=basic&isGame=false&reportName=bios&cayenneExp=gameTypeId=2%20and%20seasonId%3E=",
-      season_id_fun,
-      "%20and%20seasonId%3C=",
-      season_id_fun
-      )
-    )
-
-  ## Playoffs
-  NHL_goalie_data_P <- jsonlite::fromJSON(
-    paste0(
-      "http://www.nhl.com/stats/rest/goalies?isAggregate=false&reportType=basic&isGame=false&reportName=bios&cayenneExp=gameTypeId=3%20and%20seasonId%3E=",
-      season_id_fun,
-      "%20and%20seasonId%3C=",
-      season_id_fun
-      )
-    )
-
-  ## Bind
-  NHL_goalie_data <- bind_rows(
-    NHL_goalie_data_R$data,
-    NHL_goalie_data_P$data
-    ) %>%
-    group_by(
-      playerBirthCity, playerBirthCountry, playerBirthDate, playerBirthStateProvince,
-      playerDraftOverallPickNo, playerDraftRoundNo, playerDraftYear, playerFirstName,
-      playerHeight, playerWeight, playerId, playerLastName, playerName, playerNationality,
-      playerPositionCode, playerShootsCatches, seasonId
-      ) %>%
-    summarise() %>%
-    data.frame()
-
-
-  ## Goalie data per season
-  NHL_goalie_data <- NHL_goalie_data %>%
-    dplyr::mutate(
-      player =     toupper(playerName),
-      player =     gsub(" ", ".", player),
-      birthday =   as.Date(playerBirthDate),
-      # season_age = as.numeric(floor((as.Date(paste0(substr(seasonId, 5, 8), "-2-15"), "%Y-%m-%d") - birthday) / 365.25)),
-      season_age = as.numeric(floor((as.Date(paste0(substr(seasonId, 1, 4), "-9-15"), "%Y-%m-%d") - birthday) / 365.25)),    ## age in line with CBA definition
-      seasonId =   as.character(seasonId)#,
-      # playerTeamsPlayedFor = ifelse(grepl(", ", playerTeamsPlayedFor), gsub(", ", "/", playerTeamsPlayedFor), playerTeamsPlayedFor)
-      ) %>%
-    rename(season = seasonId) %>%
-    ungroup() %>%
-    rename_at(
-      vars(
-        playerPositionCode, playerShootsCatches, playerBirthCity, playerBirthCountry, #playerTeamsPlayedFor,
-        playerDraftOverallPickNo, playerDraftRoundNo, playerDraftYear, playerHeight, playerWeight
-        ),
-      funs(gsub("player", "", .))
-      ) %>%
-    dplyr::mutate(
-      position_type = "G",
-      current_age =   floor((Sys.Date() - birthday) / 365.25)
-      ) %>%
-    select(
-      player, NHL_ID = playerId, position = PositionCode, position_type, ShootsCatches, birthday, # TeamsPlayedFor,
-      BirthCity, BirthCountry, DraftOverallPickNo, DraftRoundNo,
-      DraftYear, Height, Weight,
-      season, season_age, current_age
-      ) %>%
-    data.frame()
-
-
-  ## Join Data
-  return_joined <- bind_rows(
-    NHL_skater_data,
-    NHL_goalie_data
-    ) %>%
-    ## Name Corrections
-    sc.update_names_API(data = ., col_name = "player") %>%
-    select(
-      player, NHL_ID, birthday, season_age, current_age, position, position_type, ShootsCatches, season,
-      everything()
-      ) %>%
-    arrange(player) %>%
-    dplyr::mutate(
-      check = 1 * (player == lag(player)),
-      check = ifelse(is.na(check), 0, check)
-      ) %>%
-    data.frame()
-
-  ## Verify no additional rows created from join
-  if (sum(return_joined$check) > 0) {
-    warning("Multiple Players with Same Name 'player_upper' Name Present")
-    break()
-    }
-
-
-  ## Ensure database friendly column names
-  colnames(return_joined) <- tolower(colnames(return_joined))
-
-  return(
-    return_joined %>%
-      select(-check)
-    )
-
-  }
-
-
-
-
-## Scrape & Process Player Names Only (from HTM shifts source)  *** Non Essential ***
-sc.get_names_combine <- function(games_vec) {
-
-  ## Get names function (from html shifts data)
-  sc.get_names <- function(game, attempts) {
-
-    url_home_shifts <- NULL
-    try_count <-  attempts
-
-    while (!is.character(url_home_shifts) & try_count > 0) {
-
-      url_home_shifts <- try(
-        getURL(
-          paste0(
-            "http://www.nhl.com/scores/htmlreports/",
-            paste0(as.numeric(substr(game, 1, 4)), as.numeric(substr(game, 1, 4)) + 1),
-            "/TH0",
-            as.character(substr(game, 6, 10)),
-            ".HTM"
-            )
-          )
-        )
-
-      try_count <- try_count - 1
-
-      }
-
-    url_away_shifts <- NULL
-    try_count <- attempts
-
-    while (!is.character(url_away_shifts) & try_count > 0) {
-
-      url_away_shifts <- try(
-        getURL(
-          paste0(
-            "http://www.nhl.com/scores/htmlreports/",
-            paste0(as.numeric(substr(game, 1, 4)), as.numeric(substr(game, 1, 4)) + 1),
-            "/TV0",
-            as.character(substr(game, 6, 10)),
-            ".HTM"
-            )
-          )
-        )
-
-      try_count <- try_count - 1
-
-      }
-
-    ## Pull out scraped shifts data
-    home_shifts_titles <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_home_shifts), ".border"))
-    away_shifts_titles <- rvest::html_text(rvest::html_nodes(xml2::read_html(url_away_shifts), ".border"))
-
-
-    return_df <-
-      bind_rows(
-        data.frame(
-          num_last_first = home_shifts_titles[-1],
-          fullTeam =       home_shifts_titles[1],
-          stringsAsFactors = FALSE
-          ),
-        data.frame(
-          num_last_first = away_shifts_titles[-1],
-          fullTeam =       away_shifts_titles[1],
-          stringsAsFactors = FALSE
-          )
-        ) %>%
-      group_by(num_last_first) %>%
-      dplyr::mutate(
-        firstName =  strsplit(gsub("^[0-9]+ ", "", num_last_first), ", ")[[1]][2],
-        lastName =   strsplit(gsub("^[0-9]+ ", "", num_last_first), ", ")[[1]][1],
-        player =     paste0(firstName, ".", lastName),
-        player_num = parse_number(num_last_first),
-        game_id =    game
-        ) %>%
-      data.frame()
-
-    }
-
-  ## Loop get names function
-  player_names <- foreach(i = 1:length(games_vec), .combine = bind_rows) %do% {
-
-    print(games_vec[i])
-
-    hold_df <- try(sc.get_names(game = games_vec[i], attempts = 3), silent = TRUE)
-
-    if (class(hold_df) == "data.frame") {
-      hold_df
-      } else {
-        data.frame(
-          num_last_first = character(),
-          fullTeam = character(),
-          firstName = character(),
-          lastName = character(),
-          player = character(),
-          player_num = numeric(),
-          game_id = character(),
-          stringsAsFactors = FALSE
-          )
-
-        }
-
-    }
-
-  ## Return data
-  return(player_names)
-
-  }
-
-
-
-## ------------------------------------------ ##
-
-
-
-## *** Still in testing ***
-
-## ------------------------ ##
-##   Expand PBP Functions   ##
-## ------------------------ ##
-
-# Expand event information
-sc.pbp_expand <- function(data) {
-
-  print("expand", quote = F)
-
-  hold <- data %>%
-    dplyr::mutate(event_circle =
-             1 * (coords_x <= -25 & coords_y > 0) +
-             2 * (coords_x <= -25 & coords_y < 0) +
-             3 * (coords_x < 0 & coords_x > 25 & coords_y > 0) +
-             4 * (coords_x < 0 & coords_x > 25 & coords_y < 0) +
-             5 * (abs(coords_x) < 5 & abs(coords_y) < 5) +
-             6 * (coords_x > 0 & coords_x < 25 & coords_y > 0) +
-             7 * (coords_x > 0 & coords_x < 25 & coords_y < 0) +
-             8 * (coords_x >= 25 & coords_y > 0) +
-             9 * (coords_x >= 25 & coords_y < 0),
-           event_rinkside =
-             case_when(
-               coords_x <= -25 ~ "L",
-               coords_x > -25 & coords_x < 25 ~ "N",
-               coords_x >= 25 ~ "R"
-               ),
-           home_zone = ifelse(event_team == away_team & event_zone == "Off", "Def",
-                              ifelse(event_team == away_team & event_zone == "Def", "Off", event_zone)),
-
-           # Initial distance / angle calculation
-           pbp_distance = suppressWarnings(as.numeric(sub(".*Zone, *(.*?) * ft.*", "\\1", event_description))),
-           pbp_distance = ifelse(event_type %in% st.fenwick_events & is.na(pbp_distance), 0, pbp_distance),
-           event_distance = sqrt((89 - abs(coords_x))^2 + coords_y^2),
-           event_angle = abs(atan(coords_y / (89 - abs(coords_x))) * (180 / pi)),
-
-           # Update distance calc for long shots (and various mistakes)
-           event_distance = ifelse(event_type %in% st.fenwick_events & pbp_distance > 89 & coords_x < 0 &
-                                     event_detail != "Tip-In" & event_detail != "Wrap-around" & event_detail != "Deflected" & !(pbp_distance > 89 & event_zone == "Off"),
-                                   sqrt((abs(coords_x) + 89)^2 + coords_y^2),
-
-                                   ifelse(event_type %in% st.fenwick_events & pbp_distance > 89 & coords_x > 0 &
-                                            event_detail != "Tip-In" & event_detail != "Wrap-around" & event_detail != "Deflected" & !(pbp_distance > 89 & event_zone == "Off"),
-                                          sqrt((coords_x + 89)^2 + coords_y^2),
-                                          event_distance)),
-
-           event_angle = ifelse(event_type %in% st.fenwick_events & pbp_distance > 89 & coords_x < 0 &
-                                  event_detail != "Tip-In" & event_detail != "Wrap-around" & event_detail != "Deflected" & !(pbp_distance > 89 & event_zone == "Off"),
-                                abs( atan(coords_y / (abs(coords_x) + 89)) * (180 / pi)),
-
-                                ifelse(event_type %in% st.fenwick_events & pbp_distance > 89 & coords_x > 0 &
-                                         event_detail != "Tip-In" & event_detail != "Wrap-around" & event_detail != "Deflected" & !(pbp_distance > 89 & event_zone == "Off"),
-                                       abs(atan(coords_y / (coords_x + 89)) * (180 / pi)),
-                                       event_angle)),
-
-           # Flip event_zone for blocked shot errors / distance less than 64 feet
-           event_zone = ifelse(event_zone == "Def" & event_type == "BLOCK", "Off", event_zone),
-           event_zone = ifelse(event_type %in% st.fenwick_events & event_zone == "Def" & pbp_distance <= 64, "Off", event_zone)
-           )
-
-  print("face_ID", quote = F)
-
-  # Add home_zonestart for corsi events
-  face_index <- hold %>%
-    filter(event_type %in% c(st.corsi_events, "FAC"),
-           game_period < 5
-           ) %>%
-    arrange(game_id, event_index) %>%
-    dplyr::mutate(face_index = cumsum(event_type == "FAC")) %>%
-    group_by(game_id, face_index) %>%
-    arrange(event_index) %>%
-    dplyr::mutate(test = first(home_zone),
-           home_zonestart = ifelse(first(home_zone) == "Def", 1,
-                                   ifelse(first(home_zone) == "Neu", 2,
-                                          ifelse(first(home_zone) == "Off", 3, NA)))
-           ) %>%
-    ungroup() %>%
-    select(game_id, event_index, home_zonestart) %>%
-    data.frame()
-
-  # Join
-  print("join", quote = F)
-  print("---", quote = F)
-
-  hold <- hold %>%
-    left_join(face_index, by = c("game_id", "event_index")) %>%
-    data.frame()
-
-  }
-
-# Add faceoff, penalty, and shift indexes
-sc.pbp_index <- function(data) {
-
-  data <- pbp_base_new
-
-  # Add shift/face/pen indexes & shift IDs
-
-  print("index", quote = F)
-
-  pbp_hold <- data %>%
-    arrange(game_id, event_index) %>%
-    dplyr::mutate(face_index =  cumsum(event_type == "FAC"),
-           shift_index = cumsum(event_type == "CHANGE"),
-           pen_index =   cumsum(event_type == "PENL")
-           ) %>%
-    data.frame()
-
-
-  print("shift_ID", quote = F)
-
-  hold <- pbp_hold %>%
-    filter(event_type %in% c("CHANGE", ## testing
-                             "FAC", "GOAL", "BLOCK", "SHOT", "MISS", "HIT", "TAKE", "GIVE", "PENL"
-                             ),
-           !(game_period == 5 & session == "R")
-           ) %>%
-    group_by(game_id, game_period, season,
-             # home_on_1, home_on_2, home_on_3, home_on_4, home_on_5, home_on_6, home_on_7,
-             # away_on_1, away_on_2, away_on_3, away_on_4, away_on_5, away_on_6, away_on_7,
-             # home_goalie, away_goalie,
-             face_index, shift_index, pen_index
-             ) %>%
-    #mutate(shift_ID = round(first(event_index) * as.numeric(game_id))) %>%
-    dplyr::mutate(shift_ID =
-             paste0(
-               str_pad((as.numeric(substr(game_id, 3, 4)) + 1), 2, "left", pad = "0"),
-               ".",
-               substr(game_id, 6, 10),
-               #paste0((as.numeric(substr(game_id, 3, 4)) + 1), ".", substr(game_id, 6, 10)),
-               ".",
-               str_pad(first(event_index), 4, "left", pad = "0")
-               )
-           ) %>%
-    summarise(shift_ID =     first(shift_ID),
-              shift_length = sum(event_length)
-              ) %>%
-    ungroup() %>%
-    select(game_id, game_period, season, shift_ID, face_index, shift_index, pen_index, shift_length) %>%
-    data.frame()
-
-
-  print("join", quote = F)
-  print("---", quote = F)
-
-  join <- pbp_hold %>%
-    left_join(
-      hold,
-      by = c(
-        "game_id", "game_period", "season",
-        # "home_on_1", "home_on_2", "home_on_3", "home_on_4", "home_on_5", "home_on_6",
-        # "away_on_1", "away_on_2", "away_on_3", "away_on_4","away_on_5", "away_on_6",
-        # "home_goalie", "away_goalie",
-        "face_index", "shift_index", "pen_index"
-        )
-      ) %>%
-    data.frame()
-
-  }
-
-
-###########################
-
-
-
-
-
-## ------------------------------------------ ##
-
-
-
-
-
-## ------------------------------------ ##
-##   Notes for sc.scrape_pbp function   ##
-## ------------------------------------ ##
-#
-# This function is used to scrape one or more games from the NHL's publicly available data
-# A list is returned with data that is requested
-# Example:
-# pbp_scrape <- sc.scrape_pbp(games = c("2018020001", "2018020002"))
-#
-#
-## 'games':
-# a vector of full NHL game IDs (one or more may be provided)
-# example: 2018020001
-#
-#
-## 'scrape_type' options available:
-# "full" - all data returned
-# "event_summary" - only event summary, rosters, and scratches information returned
-# "rosters" - only rosters and scratches information returned
-# default is "full"
-#
-#
-## 'live_scrape' call:
-# FALSE = function adjusts incorrect player & goalie shifts
-# TRUE = function does not adjust incorrect player & goalie shifts (this should be used when scraping games that are in progress)
-# default is FALSE
-#
-#
-## 'verbose'
-# TRUE = print the system time for each game that is scraped
-# default is TRUE
-#
-#
-## 'sleep':
-# time to wait between each game being scraped (in seconds)
-# default is 0
-#
-#
-#
-## ------------------ ##
-##   Example Scrape   ##
-## ------------------ ##
-#
-# *** Scrape the first 100 games from the 20182019 regular season
-#
-# games_vec <- c(as.character(seq(2018020001, 2018020100, by = 1)))
-#
-# pbp_scrape <- sc.scrape_pbp(games = games_vec)
-#
-## Pull out of list
-# game_info_df_new <-     pbp_scrape$game_info_df               ## game information data
-# pbp_base_new <-         pbp_scrape$pbp_base                   ## main play-by-play data
-# pbp_extras_new <-       pbp_scrape$pbp_extras                 ## extra play-by-play data
-# player_shifts_new <-    pbp_scrape$player_shifts              ## full player shifts data
-# player_periods_new <-   pbp_scrape$player_periods             ## player TOI sums per period (from the shifts source)
-# roster_df_new <-        pbp_scrape$roster_df                  ## roster data
-# scratches_df_new <-     pbp_scrape$scratches_df               ## scratches data
-# event_summary_df_new <- pbp_scrape$events_summary_df          ## event summary data (box score stats, etc.)
-# scrape_report <-        pbp_scrape$report                     ## report showing number of rows and time to scrape game
-#
-#
-## Get API info
-# player_info_df_new <- sc.player_info_API(season_id_fun = "20182019")
-#
-## Join NHL player IDs with roster data
-# roster_df_new_add <- roster_df_new %>%
-#   left_join(player_info_df_new %>% select(player, NHL_ID, birthday),
-#             by = "player"
-#            ) %>%
-#   data.frame()
-#
-#
-## Add additional information to pbp data
-# pbp_expand <- sc.pbp_expand(data = pbp_base_new)
-# pbp_expand <- sc.pbp_index(data = pbp_expand)
-#
-#
-#
-## -------------------------------- ##
-##   sc.scrape_schedule() Example   ##
-## -------------------------------- ##
-#
-## Get yesterday's schedule
-# schedule_current <- sc.scrape_schedule(start_date = Sys.Date() - 1,
-#                                        end_date =   Sys.Date() - 1)
-#
+}
 
 
